@@ -227,13 +227,13 @@ bind_rows(auroc.all.lasso, test.average.lasso) %>%
 
 
 ### INVESTIGATE FEATURE WEIGHTS
-# trained models are saved in sc.list
+# trained models are saved in sc.list.lasso
 # extract the models weights and compare them to the associations calculated above
 
 weight.list.lasso <- list()
 
 for (d in datasets){
-  sc.obj.train <- sc.list[[d]]
+  sc.obj.train <- sc.list.lasso[[d]]
   # extract the feature weights out of the SIAMCAT object
   temp <- feature_weights(sc.obj.train)
   temp$genus <- rownames(temp)
@@ -395,13 +395,13 @@ bind_rows(auroc.all.enet, test.average.enet) %>%
 
 
 ### INVESTIGATE FEATURE WEIGHTS
-# trained models are saved in sc.list
+# trained models are saved in sc.list.enet
 # extract the models weights and compare them to the associations calculated above
 
 weight.list.enet<- list()
 
 for (d in datasets){
-  sc.obj.train <- sc.list[[d]]
+  sc.obj.train <- sc.list.enet[[d]]
   # extract the feature weights out of the SIAMCAT object
   temp <- feature_weights(sc.obj.train)
   temp$genus <- rownames(temp)
@@ -563,13 +563,13 @@ bind_rows(auroc.all.ridge, test.average.ridge) %>%
 
 
 ### INVESTIGATE FEATURE WEIGHTS
-# trained models are saved in sc.list
+# trained models are saved in sc.list.ridge
 # extract the models weights and compare them to the associations calculated above
 
 weight.list.ridge<- list()
 
 for (d in datasets){
-  sc.obj.train <- sc.list[[d]]
+  sc.obj.train <- sc.list.ridge[[d]]
   # extract the feature weights out of the SIAMCAT object
   temp <- feature_weights(sc.obj.train)
   temp$genus <- rownames(temp)
@@ -731,13 +731,13 @@ bind_rows(auroc.all.rf, test.average.rf) %>%
 
 
 ### INVESTIGATE FEATURE WEIGHTS
-# trained models are saved in sc.list
+# trained models are saved in sc.list.rf
 # extract the models weights and compare them to the associations calculated above
 
 weight.list.rf<- list()
 
 for (d in datasets){
-  sc.obj.train <- sc.list[[d]]
+  sc.obj.train <- sc.list.rf[[d]]
   # extract the feature weights out of the SIAMCAT object
   temp <- feature_weights(sc.obj.train)
   temp$genus <- rownames(temp)
