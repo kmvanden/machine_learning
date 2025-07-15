@@ -28,10 +28,7 @@ table(meta$condition)
 
 
 # feature table
-# convert feature table to relative abundances
 feat <- read.table("feature_table.txt", header = TRUE)
-feat <- apply(feat, 2, function(x) x / sum(x))
-feat <- as.data.frame(feat)
 
 ### filter species present in less than 10% of samples
 dim(feat) # 2302   70
@@ -39,6 +36,10 @@ presence_threshold <- 0.10 * ncol(feat) # needs to be in at least 7 samples
 features_to_keep <- rowSums(feat != 0) >= presence_threshold # determine if the feature is present >=10% of samples
 feat_filt <- feat[features_to_keep, ] # subset the feature table to only include features present in at least 10% of samples
 dim(feat_filt) # 935  70
+
+# convert feature table to relative abundances
+feat_filt <- apply(feat_filt, 2, function(x) x / sum(x))
+feat_filt <- as.data.frame(feat_filt)
 
 ### log.unit normalization
 log_n0 <- 1e-6 # pseudocount
