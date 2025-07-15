@@ -97,7 +97,7 @@ Performance metrics are used to evaluate how well the model performs on the test
   - **Solution**: break the constant-sum constraint and treat the data in Euclidean space by using log-ratio transformations like CLR, ALR or ILR. Most log-ratio methods require positive values, so zeros need to be dealt with using pseudocounts or imputation methods.
 
 **Sparsity (zero inflation)**: in microbiome data, many taxa are absent in most samples. Sparse features provide very little splitting power (not informative). Sparse features may also act as noise and cause overfitting (especially if the data is high dimensional and there are a lot of sparse features).
-  - **Solution**: filter out rare features (those present in < 10% of the samples), perform feature selection based on feature importance, and/or use transformations that explicitly model zero-inflation (model both structural and sampling zeros, like ZINB or metagenomeSeq).
+  - **Solution**: filter out rare features (those present in < 10% of the samples), perform feature selection based on feature importance, and/or use transformations that explicitly model zero-inflation (model both structural and sampling zeros, like ZINB or metagenomeSeq(ZIG)).
 
 **High dimensionality**: microbiome data often have many more features than samples. High dimensionality can increase the risk of overfitting, degrade feature importance (important features masked by irrelevant features) and can also increase the computational load. 
   - **Solution**: filter out rare features (those present in < 10% of the samples) and/or perform feature selection based on feature importance.
