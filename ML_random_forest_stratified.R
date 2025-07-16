@@ -18,7 +18,6 @@ set.seed(1234)
 # setwd
 setwd("/Users/kristinvandenham/kmvanden/RStudio/")
 
-
 ### load data from curatedMetagenomicData
 ibdmdb <- curatedMetagenomicData("2021-10-14.HMP_2019_ibdmdb.relative_abundance", dryrun = FALSE, counts = TRUE, rownames = "short")
 ibd <- ibdmdb[[1]]
@@ -61,12 +60,15 @@ ibd_meta_filt$disease_subtype[is.na(ibd_meta_filt$disease_subtype)] <- "healthy"
 # shorten column name
 colnames(ibd_meta_filt)[which(colnames(ibd_meta_filt) == "antibiotics_current_use")] <- "antibiotics"
 
-# format variables correctly for modeling
+# format variables correctly for modeling (as factor or numeric)
 head(ibd_meta_filt)
 ibd_meta_filt <- ibd_meta_filt %>%
   mutate(across(c(antibiotics, disease, gender, location, disease_subtype), as.factor)) # change variables to factors
 ibd_meta_filt$age <- as.numeric(ibd_meta_filt$age) # change variable to numeric
 str(ibd_meta_filt)
+
+# add sample name column to metadata
+ibd_meta_filt$sample_name <- rownames(ibd_meta_filt)
 
 
 ### FEATURE TABLE
@@ -92,28 +94,28 @@ all(colnames(ibd_feat_filt) == rownames(ibd_meta_filt)) # column names of featur
 dim(ibd_feat_filt) # 585 130 (from 1627 samples to 130 --> one sample for each subject)
 
 # convert feature table to relative abundances
-ibd_feat_filt <- apply(ibd_feat_filt, 2, function(x) x / sum(x))
-ibd_feat_filt <- as.data.frame(ibd_feat_filt)
+ibd_feat_rel <- sweep(ibd_feat_filt, 2, colSums(ibd_feat_filt), FUN = "/")
+ibd_feat_rel <- as.data.frame(ibd_feat_rel)
 
-# log.unit normalization  of feature table
+### add pseudocount and perform log-transform
 log_n0 <- 1e-6 # pseudocount
-n_p <- 2 # L2 norm 
-# add pseudocount and perform log-transform
-ibd_feat_filt_log <- log(ibd_feat_filt + log_n0)
-# perform row-wise L2 normalization
-ibd_row_norms <- sqrt(rowSums(ibd_feat_filt_log^n_p))
-ibd_feat_norm <- sweep(ibd_feat_filt_log, 1, ibd_row_norms, FUN = "/")
-ibd_feat_norm[1:5, 1:5]
+ibd_feat_log <- t(ibd_feat_rel) # transpose feature table
+ibd_feat_log <- log(ibd_feat_log + log_n0)
+ibd_feat_log <- as.data.frame(ibd_feat_log)
 
+# perform row-wise L2 normalization (SIAMCAT)
+n_p <- 2 # L2 norm
+ibd_row_norms <- sqrt(rowSums(ibd_feat_log^n_p))
+ibd_feat_lognorm <- sweep(ibd_feat_log, 1, ibd_row_norms, FUN = "/")
+ibd_feat <- as.data.frame(ibd_feat_lognorm)
+
+
+# rownames of metadata need to match the rownames of the feature table
+all(rownames(ibd_meta_filt) == rownames(ibd_feat))
+ibd_feat$sample_name <- rownames(ibd_feat) # add sample_name column to feature table
 
 ### merge metadata and feature table
-all(colnames(ibd_feat_norm) == rownames(ibd_meta_filt)) # feature data column names need to match the metadata rownames 
-ibd_feat <- t(ibd_feat_norm) # transpose feature table
-ibd_feat <- as.data.frame(ibd_feat) 
-ibd_feat$sample_name <- rownames(ibd_feat) # add sample_name column to feature table
-ibd_meta_filt$sample_name <- rownames(ibd_meta_filt) # add sample name column to metadata
-all(ibd_feat$sample_name == ibd_meta_filt$sample_name) # sample_name columns need to match  
-ibd_merge <- merge(ibd_meta_filt, ibd_feat, by = "sample_name", all.x = TRUE) # merge the two data.frames
+ibd_merge <- merge(ibd_meta_filt, ibd_feat, by = "sample_name", all.x = TRUE)
 ibd_merge <- ibd_merge[,-1] # remove sample_name
 ibd_merge[1:10, 1:10]
 
@@ -774,8 +776,8 @@ micro_feat_cols <- setdiff(colnames(ibd_merge), c("disease", "disease_subtype", 
 # column names for microbiome features + relevant metadata (full predictor set)
 all_feat_cols <- micro_feat_cols  ### only include microbiome features in this model
 
-# set stratification variable
-strat_var <- "age_group" # "gender" or "age_group"
+### set stratification variable
+strat_var <- "gender" # "gender" or "age_group"
 # get the levels to compare
 subgroups <- unique(ibd_merge[[strat_var]])
 
@@ -1029,7 +1031,7 @@ ggplot(perf_df, aes(x = Group, y = Spec, fill = Group)) +
 ### are different features predictive in different subgroups
 
 # MALE VS FEMALE
-# gender_stratified_importance <- bind_rows(stratified_importance, .id = "Group")
+### gender_stratified_importance <- bind_rows(stratified_importance, .id = "Group")
 gender_stratified_importance <- gender_stratified_importance %>%
   arrange(desc(mean_MeanDecreaseAccuracy))
 
@@ -1059,7 +1061,7 @@ grid.draw(venn.plot)
 
 
 # YOUNGER VS OLDER
-# age_stratified_importance <- bind_rows(stratified_importance, .id = "Group")
+### age_stratified_importance <- bind_rows(stratified_importance, .id = "Group")
 age_stratified_importance <- age_stratified_importance %>%
   arrange(desc(mean_MeanDecreaseAccuracy))
 
@@ -1088,16 +1090,18 @@ venn.plot <- venn.diagram(
 grid.draw(venn.plot)
 
 
+# IN ALL
 ### top features found in all stratified models
 in_age <- intersect(top_features_younger, top_features_older)
 in_gender <- intersect(top_features_male, top_features_female)
 in_all <- intersect(in_age, in_gender)
+in_all
 
-ggplot(ibd_merge, aes(x = disease_subtype, y = Alistipes_finegoldii, fill = disease_subtype)) +
+ggplot(ibd_merge, aes(x = disease_subtype, y = Bacteroides_stercoris, fill = disease_subtype)) +
   geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
   geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
   scale_fill_manual(values = c("healthy" = "skyblue", "CD" = "pink", "UC" = "plum")) +
-  labs(title = "Relative abundance of Alistipes_finegoldii", 
+  labs(title = "Relative abundance of Bacteroides stercoris", 
        y = "Relative abundance", x = NULL) + 
   theme_minimal() + theme(legend.position = "none")
 

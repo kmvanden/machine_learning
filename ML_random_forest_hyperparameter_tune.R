@@ -38,27 +38,27 @@ feat_filt <- feat[features_to_keep, ] # subset the feature table to only include
 dim(feat_filt) # 935  70
 
 # convert feature table to relative abundances
-feat_filt <- apply(feat_filt, 2, function(x) x / sum(x))
-feat_filt <- as.data.frame(feat_filt)
+feat_rel <- sweep(feat_filt, 2, colSums(feat_filt), FUN = "/")
+feat_rel <- as.data.frame(feat_rel)
 
-### log.unit normalization
+### add pseudocount and perform log-transform
 log_n0 <- 1e-6 # pseudocount
+feat_log <- t(feat_rel) # transpose feature table
+feat_log <- log(feat_log + log_n0)
+feat_log <- as.data.frame(feat_log)
+
+# perform row-wise L2 normalization (SIAMCAT)
 n_p <- 2 # L2 norm 
-# add pseudocount and perform log-transform
-feat_log <- log(feat + log_n0)
-# perform row-wise L2 normalization
 row_norms <- sqrt(rowSums(feat_log^n_p))
-feat_norm <- sweep(feat_log, 1, row_norms, FUN = "/")
-
-# rownames of metadata need to match the column names of the feature table
-all(rownames(meta) == colnames(feat_norm))
+feat_lognorm <- sweep(feat_log, 1, row_norms, FUN = "/")
+feat <- as.data.frame(feat_lognorm)
 
 
-### merge metadata and feature table
-feat <- t(feat_norm) # transpose feature table
-feat <- as.data.frame(feat) 
+# rownames of metadata need to match the rownames of the feature table
+all(rownames(meta) == rownames(feat))
 feat$sample_name <- rownames(feat) # add column sample_name
 
+### merge metadata and feature table
 metagen <- merge(meta, feat, by = "sample_name", all.x = TRUE)
 metagen <- metagen[,-1] # remove sample_name
 
@@ -542,7 +542,7 @@ ggplot(metric_summary, aes(x = weight, y = mean_f1, fill = weight)) +
   geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
   geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
   scale_fill_manual(values = c("equal" = "skyblue", "mild" = "pink", "med" = "plum", "high" = "salmon1")) +
-  labs(title = "erformance versus class weights", 
+  labs(title = "Performance versus class weights", 
        y = "F1 score", x = "Class weights") + 
   theme_minimal() + theme(legend.position = "none")
 
@@ -551,7 +551,7 @@ ggplot(metric_summary, aes(x = weight, y = mean_sens, fill = weight)) +
   geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
   geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
   scale_fill_manual(values = c("equal" = "skyblue", "mild" = "pink", "med" = "plum", "high" = "salmon1")) +
-  labs(title = "erformance versus class weights", 
+  labs(title = "Performance versus class weights", 
        y = "Sensitivity", x = "Class weights") + 
   theme_minimal() + theme(legend.position = "none")
 
@@ -560,7 +560,7 @@ ggplot(metric_summary, aes(x = weight, y = mean_spec, fill = weight)) +
   geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
   geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
   scale_fill_manual(values = c("equal" = "skyblue", "mild" = "pink", "med" = "plum", "high" = "salmon1")) +
-  labs(title = "erformance versus class weights", 
+  labs(title = "Performance versus class weights", 
        y = "Specificity", x = "Class weights") + 
   theme_minimal() + theme(legend.position = "none")
 
@@ -569,7 +569,7 @@ ggplot(metric_summary, aes(x = weight, y = mean_auc, fill = weight)) +
   geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
   geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
   scale_fill_manual(values = c("equal" = "skyblue", "mild" = "pink", "med" = "plum", "high" = "salmon1")) +
-  labs(title = "erformance versus class weights", 
+  labs(title = "Performance versus class weights", 
        y = "AUC", x = "Class weights") + 
   theme_minimal() + theme(legend.position = "none")
 
@@ -901,8 +901,6 @@ ggplot(metric_summary, aes(x = mtry, y = mean_auc, fill = mtry)) +
   labs(title = "Performance versus number of features at splits", 
        y = "AUC", x = "Number of features at splits") + 
   theme_minimal() + theme(legend.position = "none")
-
-
 
 
 ####################################################################################
