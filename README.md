@@ -113,3 +113,5 @@ Performance metrics are used to evaluate how well the model performs on the test
 
 **Batch effects**: if non biological variation (for example, variation due to sample processing or sequencing) is confounded with class labels, the model may learn to predict batch rather than the true biological signal, which can reduce generalizability. 
   - **Solution**: use batch correction methods, such as ComBat or Harmony (but this may impact biological signal if it is confounded with batch), add batch as a categorical variable so that the impact of batch can be modeled and discounted, and/or use grouped cross-validation (all samples from the same batch fall into the same fold, mimicking real-world deployment).
+
+## :cowboy_hat_face::mountain::spider_web: Logistic Regression
