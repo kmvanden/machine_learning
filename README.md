@@ -1,7 +1,8 @@
 # Machine Learning
 ## :evergreen_tree::deciduous_tree::evergreen_tree: Random Forest
 Random forests are an ensemble learning method that aggregates the predictions of multiple decision trees built using bootstrap sampling and random feature selection in order to improve classification (categorical outcomes) or regression (continuous outcomes) performance.
-### Overview of Random Forest Construction
+
+### Overview of Random Forest Model Construction
 Data is split into training data and testing data. 
   - **Training data**: the portion of the data used to train (build) the models. The models learn the patterns/relationships between the input features and the target labels.
   - **Testing data**: the portion of the data that is used to evaluate the models (determine how well the models generalizes to unseen data).
@@ -20,7 +21,7 @@ The samples in the testing data are then dropped down the tree until they reach 
   - **Majority vote**: each model votes for a class label and the class with the most votes wins.
   - **Average prediction**: each model outputs a numeric value and the average number is the final prediction.
 
-### Hyperparameters
+### Random Forest Hyperparameters
 Hyperparameters are tunable settings that are set before the training process begins. They control how the model is trained and thus the performance of the model.
 
 Each decision tree within a random forest is trained on a bootstrap sample of the training data. This introduces variation, so that each tree doesn’t learn the same patterns. On average, about two-thirds of the training data is included in any given boostrap sample (the remaining one-third of the data are the out-of-bag (OOB) samples).
@@ -55,7 +56,37 @@ The decision tree-building process is then repeated ```ntree``` times to create 
   - **Number of trees** (```ntree```): determines how many decision trees are in the forest. 
 More trees = more stable and consistent predictions, improvement of generalization and accuracy (up to a point), but requires longer computation time
 
-### Performance Metrics
+## :cowboy_hat_face::mountain::spider_web: Logistic Regression
+Logistic regression is a statistical classification algorithm that models the relationship between predictor variables and outcome labels.
+
+### Overview of Logisitic Regression Model Construction
+The input features are combined linearly and coefficients (weights) are applied to each predictor variable, creating the linear predictor.
+  - Linear predictor = β0​+β1​x1​+β2​x2​+⋯+βn​xn​ (for a binary logistic regression model)
+  - Coefficients are typically initialized at zero (or at very small random values), which leads to initial predicted probabilities near 0.5 (unbiased starting point).
+
+The logistic regression model assumes that the log-odds of the probability of the outcome being in the positive class is a linear combination of the input features.
+  - Linear predictor = β0​+β1​x1​+β2​x2​+⋯+βn​xn​ = log(p/1-p​) = log odds
+  - Log-odds are used as an intermediary rather than directly using probabilities because the output of a linear combination (like the linear predictor) is unbounded, whereas probabilities have to be between 0 and 1. 
+
+To convert the log-odds into a probabilities, the log-odds transformation is inverted using the logistic (sigmoid) function, which maps any real number to a value between 0 and 1, producing an S-shaped curve.
+  - Probability = 1/(1+ e^-(β0​+β1​x1​+⋯+βn​xn​))
+  - Small changes in the log-odds around zero result in rapid changes in probability near 0.5, allowing smooth transitions between class probabilities, and the curve flattens at extreme values, reflecting confidence in the classification.
+
+Optimization algorithms, such as gradient descent or coordinate descent, are used to learn the coefficients that minimize the loss function, aiming to produce predicted probabilities that match the true class labels as closely as possible.
+  - **Loss function**: a mathematical expression that measures how far off the predictions of the model are from the true values. Log loss (binary cross-entropy) is commonly used in logistic regression.
+    - Confident predictions (when probabilities are very close to 0 or 1) are heavily penalized by if they are wrong (large increase in loss) and heavily rewarded if they are correct (large decrease in loss).
+  - **Gradient descent**: iteratively calculates the gradient of the loss function with respect to each coefficient (how the loss would change if the coefficient was slightly increased or decreased) and each coefficient is then adjusted in the direction that reduces loss. This process is repeated until loss stabilizes (i.e., stops decreasing significantly).
+  - **Coordinate descent**: minimizes the loss function with respect to one parameter at a time. Parameters are updated sequentially, cycling through each coefficient and adjusting it in the direction that reduces loss until convergence is reached. Since all but one of the parameters are fixed during each step, each coefficient can be updated using a closed-form solution (computed directly via a formula), leading to faster convergence in certain problems (see below).
+  - **L1-regularized optimization**: L1 regularization adds a penalty term to the loss function equal to the sum of the absolute values of the coefficients, which is used to encourage sparsity by penalizing larger coefficients. The absolute value function is not differentiable at zero (there is a kink in it).
+    - Gradient descent relies on computing the gradient (derivative) of the loss function with respect to the parameters. Since the L1 penalty is not differentiable at zero, gradient descent doesn't work well with L1 regularization.
+    - Coordinate descent solves a one-variable L1-regularized optimization problem for each coefficient individually. It uses the soft-thresholding function, which shrinks coefficients toward zero and sets them to exactly zero if they’re not large enough to overcome the L1 penalty. This balances the fitting of the data (loss function) with model simplicity (L1 penalty).
+  - **Sparse data optimization**: gradient descent computes the full gradient vector over all features at each iteration, which doesn’t take advantage of sparsity (many features or coefficients being zero). In contrast, coordinate descent updates one feature at a time and can efficiently skip computations for samples where that feature is zero, leading to faster computations especially when the data or the coefficients are sparse.
+
+After convergence, the final coefficients are used to make predictions on unseen data.
+
+### Logistic Regression Hyperparameters
+
+### Classification Performance Metrics
 Performance metrics are used to evaluate how well the model performs on the test data set (the prediction quality of the model).
 
 **Confusion matrix**: compares predicted labels versus actual labels of the data.
@@ -114,4 +145,3 @@ Performance metrics are used to evaluate how well the model performs on the test
 **Batch effects**: if non biological variation (for example, variation due to sample processing or sequencing) is confounded with class labels, the model may learn to predict batch rather than the true biological signal, which can reduce generalizability. 
   - **Solution**: use batch correction methods, such as ComBat or Harmony (but this may impact biological signal if it is confounded with batch), add batch as a categorical variable so that the impact of batch can be modeled and discounted, and/or use grouped cross-validation (all samples from the same batch fall into the same fold, mimicking real-world deployment).
 
-## :cowboy_hat_face::mountain::spider_web: Logistic Regression
