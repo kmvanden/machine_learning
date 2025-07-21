@@ -38,12 +38,7 @@ feat_rel <- as.data.frame(feat_rel)
 # CLR transformation
 feat_rel_pc <- feat_rel + 1e-6 # add pseudocount
 feat_clr <- clr(t(feat_rel_pc)) # transpose data and perform CLR transformation
-feat_clr <- as.data.frame(feat_clr)
-
-# standardization (z-score scaling)
-# necessary for logistic regression with regularization
-feat_scaled <- scale(feat_clr) # centers and scales each feature
-feat_final <- as.data.frame(feat_scaled)
+feat_final <- as.data.frame(feat_clr)
 
 # rownames for metadata need to match rownames for feature table
 all(rownames(meta) == rownames(feat_final))
@@ -97,7 +92,7 @@ for (a in alpha_values){
         
         # fit logistic regression with alpha and lambda (binary classification)
         model <- glmnet(feat_train, label_train, family = "binomial",
-                        alpha = a, lambda = l, standardize = FALSE)
+                        alpha = a, lambda = l, standardize = TRUE)
         
         # evaluate on test set
         probabilities <- as.vector(predict(model, feat_test, type = "response"))
@@ -195,12 +190,6 @@ overall_metric_summary <- results_df %>%
 overall_metric_summary <- as.data.frame(overall_metric_summary)
 
 
-sum(is.na(metric_summary$mean_f1))
-# 1765
-table(metric_summary$mean_bal_acc)
-# 1588 for 0.51
-
-
 ############################################################################################
 ###   LOGISTIC REGRESSION + CROSS-VALIDATION - ALPHA AND LAMBDA TUNING + CLASS WEIGHTS   ###
 ############################################################################################
@@ -257,7 +246,7 @@ for (a in alpha_values){
         
         # fit logistic regression with alpha and lambda and class weighting
         model <- glmnet(feat_train, label_train, family = "binomial",
-                        alpha = a, lambda = l, standardize = FALSE,
+                        alpha = a, lambda = l, standardize = TRUE,
                         weights = train_weights)
         
         # evaluate on test set
@@ -356,6 +345,32 @@ overall_metric_summary <- results_df %>%
 overall_metric_summary <- as.data.frame(overall_metric_summary)
 
 
+### determine the alpha and lambda values from the best performing model
+best_params <- overall_metric_summary %>%
+  slice(1)
+
+best_alpha <- as.numeric(str_extract(best_params$alpha_lambda, "(?<=alpha_)\\d+\\.?\\d*"))
+best_lambda <- as.numeric(str_extract(best_params$alpha_lambda, "(?<=lambda_)\\d+\\.?\\d*"))
+
+### refit glmnet on the full dataset using the best parameters
+final_model <- glmnet(x = feat, y = label, family = "binomial",
+                      alpha = best_alpha, lambda = best_lambda,
+                      weights = weight_vector,
+                      standardize = TRUE) 
+
+# extract coefficients (feature importance)
+coefs <- coef(final_model)
+coefs_df <- as.data.frame(as.matrix(coefs))
+coefs_df$feature <- rownames(coefs_df)
+colnames(coefs_df)[1] <- "coefficient"
+
+# remove the intercept and zero coefficients
+# rank by effect size
+nonzero_coefs <- coefs_df %>%
+  filter(feature != "(Intercept)" & coefficient != 0) %>%
+  arrange(desc(abs(coefficient)))
+
+
 ###########################################################
 ###   LOGISTIC REGRESSION - CHECK WITH SIMPLER MODELS   ###
 ###########################################################
@@ -418,6 +433,9 @@ auc_glmnet <- auc(roc_glmnet)
 # performance metrics 
 cm_glmnet # confusion matrix
 auc_glmnet # AUC
+
+
+### data is not linearly separable
 
 
 sessionInfo()
