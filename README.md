@@ -11,10 +11,10 @@ The logistic regression model assumes that the log-odds of the probability of th
   - Linear predictor = β0​+β1​x1​+β2​x2​+⋯+βn​xn​ = log(p/1-p​) = log odds
   - Log-odds are used as an intermediary rather than directly modeling probabilities because:
     - Linearity in parameters: in log-odds (logit) space, the model can treat the relationship between the features and the outcomes as a linear combination of features (i.e., the linear predictor) and linear models are easier to analyze, interpret and optimize.
-    - Unbounded domain: log-odds are unbounded, whereas probabilities have to be between 0 and 1. Unbounded values make gradient optimization more effective and stable (gradients behave smoothly across the entire real number line, avoiding saturation near probability bounds where gradients become increasingly small) and facilitate closed-form updates in coordinate descent (there are no box constraints, so contrained optimization is avoided).
-    - Convex loss functions: log-odds enable the use of convex loss functions (like log loss), which have a single global minimum, making optimization more reliable (they guaranteed to converge at the global minimum).
+    - Unbounded domain: log-odds are unbounded, whereas probabilities have to be between 0 and 1. Unbounded values make gradient optimization more effective and stable (gradients behave smoothly across the entire real number line, avoiding saturation near probability bounds where gradients become increasingly small) and facilitate closed-form updates in coordinate descent (there are no box constraints, so constrained optimization is avoided).
+    - Convex loss functions: log-odds enable the use of convex loss functions (like log loss), which have a single global minimum, making optimization more reliable (they are guaranteed to converge at the global minimum).
 
-To convert the log-odds into a probabilities, the log-odds transformation is inverted using the logistic (sigmoid) function, which maps any real number to a value between 0 and 1, producing an S-shaped curve.
+To convert the log-odds into probabilities, the log-odds transformation is inverted using the logistic (sigmoid) function, which maps any real number to a value between 0 and 1, producing an S-shaped curve.
   - Probability = 1/(1+ e^-(β0​+β1​x1​+⋯+βn​xn​))
   - Small changes in the log-odds around zero result in rapid changes in probability near 0.5, allowing smooth transitions between class probabilities, and the curve flattens at extreme values, reflecting confidence in the classification.
 
@@ -56,7 +56,8 @@ In logistic regression, key hyperparameters relate to regularization (addition o
   - **Feature selection**: L1 regularization pushes some coefficients to exactly zero.
   - **Improves numerical stability**: L2 regularization improves coefficient stability with data that is high-dimensional and highly correlated.
 
-**Alpha**: determines the balance between L1 and L2 regularization used in elastic net.   - When alpha = 1, the model is pure L1. When alpha = 0, the model is pure L2. When 0 < alpha < 1 the model is a mixture of L1 and L2 (elastic net). 
+**Alpha**: determines the balance between L1 and L2 regularization used in elastic net.   
+  - When alpha = 1, the model is pure L1. When alpha = 0, the model is pure L2. When 0 < alpha < 1 the model is a mixture of L1 and L2 (elastic net). 
   - Different data sets benefit from different regularization types. Tuning alpha allows the model to find the optimum balance between L1 and L2 regularization for the given dataset.
 
 **Lambda**: controls the strength of the regularization penalty. 
@@ -121,7 +122,7 @@ The decision tree-building process is then repeated ```ntree``` times to create 
   - **Number of trees** (```ntree```): determines how many decision trees are in the forest. 
 More trees = more stable and consistent predictions, improvement of generalization and accuracy (up to a point), but requires longer computation time
 
-### Classification Performance Metrics
+## Classification Performance Metrics
 Performance metrics are used to evaluate how well the model performs on the test data set (the prediction quality of the model).
 
 **Confusion matrix**: compares predicted labels versus actual labels of the data.
@@ -157,8 +158,7 @@ Performance metrics are used to evaluate how well the model performs on the test
 **ROC (receiver operating characteristic) curve**: plots the true positive rate (sensitivity) vs the false positive rate (1-specificity) at all possible classification thresholds. 
   - The area under the curve (AUC) is a measure of the overall ability of the model to discriminate positives versus negatives across all thresholds, and ranges from 0.5 (random guessing) to 1.0 (perfect classification).
 
-### Key Issues with Microbiome Data When Using Machine Learning Models
-
+## Key Issues with Microbiome Data When Using Machine Learning Models
 **Compositional data**: microbiome data consists of relative abundances (the features are not independent), which introduces spurious correlations between the features due to the constant-sum constraint. Random forests and logistic regression do not assume that features are independent, but their performance and interpretability can still be impacted by the presence of correlated features. Correlated features (both real biological relationships and those caused by the closure effect) provide redundant information to the model, which can cause the model to overfit small patterns or noise, decreasing generalizability on unseen data. Random forests and logistic regression (with L1 regularization) tend to randomly assign importance to one feature (or sometimes a few features in the case of random forests) out of a group of correlated features, even if they are equally informative, which can lead to unstable or misleading interpretations. Additionally, this redundant information results in less true randomness (created during bootstrap sampling and random features selection) in the ensemble, which decreases the diversity of decision trees within a random forest.
   - **Solution**: break the constant-sum constraint and treat the data in Euclidean space by using log-ratio transformations like CLR, ALR or ILR. Most log-ratio methods require positive values, so zeros need to be dealt with using pseudocounts or imputation methods. For logistic regression, the use of L2 regularization can help with the stability and interpretability of correlated features. For random forests, mean decrease in accuracy (permutation importance) is a better measure of feature importance for correlated features than mean decrease in Gini impurity (correlated features compete to be selected at the splits). 
 
