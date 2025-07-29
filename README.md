@@ -15,7 +15,7 @@ The logistic regression model assumes that the log-odds of the probability of th
     - Convex loss functions: log-odds enable the use of convex loss functions (like log loss), which have a single global minimum, making optimization more reliable (they are guaranteed to converge at the global minimum).
 
 To convert the log-odds into probabilities, the log-odds transformation is inverted using the logistic (sigmoid) function, which maps any real number to a value between 0 and 1, producing an S-shaped curve.
-  - Probability = 1/(1+ e^-(β0​+β1​x1​+⋯+βn​xn​))
+  - Probability = 1/(1+ e<sup>-(β0​+β1​x1​+⋯+βn​xn​)</sup>)
   - Small changes in the log-odds around zero result in rapid changes in probability near 0.5, allowing smooth transitions between class probabilities, and the curve flattens at extreme values, reflecting confidence in the classification.
 
 Optimization algorithms, such as gradient descent or coordinate descent, are used to learn the coefficients that minimize the loss function, aiming to produce predicted probabilities that match the true class labels as closely as possible.
@@ -31,7 +31,7 @@ Optimization algorithms, such as gradient descent or coordinate descent, are use
 After convergence, the final coefficients are used to make predictions on unseen data.
 
 In logistic regression, each coefficient represents the log-odds change in the outcome associated with a one-unit increase in the predictor, assuming other features are held constant. A positive coefficient means that an increase in the feature is associated with an increased probability of the positive class and a negative coefficient means that an increase in the feature is associated with a decreased probability of the positive class. 
-  - For example, if the log-transformed abundance of a bacterial taxon has a coefficient of 1.5, that implies that for every unit increase in log abundance, the odds of the positive class increase by a factor of approximately 4.5 (e^1.5 ≈ 4.5). 
+  - For example, if the log-transformed abundance of a bacterial taxon has a coefficient of 1.5, that implies that for every unit increase in log abundance, the odds of the positive class increase by a factor of approximately 4.5 (e<sup>1.5</sup> ≈ 4.5). 
   - However, the interpretability of logistic regression coefficients can be complicated by several factors.
     - If the data is high dimensional and sparse, the coefficients become unstable and unreliable without appropriate regularization.
     - If the data is highly correlated, they share explanatory power, causing the individual coefficients to lose unique interpretability.
@@ -89,8 +89,6 @@ The samples in the testing data are then dropped down the tree until they reach 
   - **Average prediction**: each model outputs a numeric value and the average number is the final prediction.
 
 ### Random Forest Hyperparameters
-Hyperparameters are tunable settings that are set before the training process begins. They control how the model is trained and thus the performance of the model.
-
 Each decision tree within a random forest is trained on a bootstrap sample of the training data. This introduces variation, so that each tree doesn’t learn the same patterns. On average, about two-thirds of the training data is included in any given bootstrap sample (the remaining one-third of the data are the out-of-bag (OOB) samples).
 
 Features within the data (especially in high dimensional datasets) can be irrelevant to class separation. Models trained with many irrelevant features are more likely to learn patterns specific to the training dataset and thus not generalize well to unseen data. 
@@ -121,6 +119,92 @@ One is the default for classification tasks and five is the default for regressi
 The decision tree-building process is then repeated ```ntree``` times to create an ensemble of decision trees, each built on a different bootstrap sample of the training data, and each making independent predictions that are then aggregated.
   - **Number of trees** (```ntree```): determines how many decision trees are in the forest. 
 More trees = more stable and consistent predictions, improvement of generalization and accuracy (up to a point), but requires longer computation time
+
+## :evergreen_tree::deciduous_tree::rocket: XGBoost
+XGBoost (extreme gradient boosting) is an ensemble learning method that uses a second-order Taylor expansion of the loss function to sequentially optimize shallow decision trees. 
+
+### Overview of XGBoost Model Construction
+Similarly to random forests, the data is split into training data and testing data. However, unlike random forests, XGBoost trees see the full training dataset (no sampling), unless ```subsample``` is set to a value less than one, and all features are considered (no random feature selection), unless one of the following subsampling parameters is set to a value less than one: ```colsample_bytree```, ```colsample_bylevel```, or ```colsample_bynode```.
+  - **Training data**: the portion of the data used to train (build) the model. The model learns the patterns/relationships between the input features and the target labels.
+Testing data: the portion of the data that is used to evaluate the model (determine how well the model generalizes to unseen data).
+  - **Cross-validation**: resampling technique used to evaluate the performance of a model on unseen data and avoid overfitting (by estimating how well the model might perform on unseen data).
+    - **Overfitting**: when a model performs well on training data, but poorly on testing data (the model has learned noise or specific patterns only present in the training set that are not generalizable to other datasets).
+    - **k-fold cross-validation**: splits the data into k equal parts (folds), trains the model on k-1 folds and tests the model on the remaining fold. The data used in the folds is then rotated, and the process is repeated k times so that each fold is used once as the test dataset. The k-fold process can be repeated multiple times with different fold splits for more reliable estimates.
+    - **Stratification**: ensures that the class distribution in each fold of the cross-validation split reflects the overall distribution of the dataset so that each training and testing fold has a representative mix of classes.
+
+XGBoost sequentially improves its predictions by adding new trees that minimize the objective function. Within the objective function, the loss function is approximated as a quadratic function of the leaf weight using a second-order Taylor expansion. This allows for a closed-form solution for the optimal logit correction, avoiding the need for iterative optimization within every tree node. 
+  - **Objective function** = loss function + regularization
+  - **Loss function**: measures how close the predicted probabilities match the true class labels (0 or 1) and how confident the model is in those predictions. Log loss is typically used by XGBoost for binary classification. 
+    - The loss is low when the predictions are both accurate and confident, and high when the predictions are confident but wrong. 
+    - Loss ≈ loss(current logit) + logit correction x gradient + ½ x (logit correction)<sup>2</sup> x Hessian
+      - **Gradient** = the first derivative of the loss function with respect to the current logit. It represents the slope of the loss function and determines the direction and magnitude of the adjustment needed to reduce the loss.
+      - **Hessian** = the second derivative of the loss function with respect to the current logit. It represents the curvature (confidence) of the loss function and qualifies how aggressively the correction should be applied (step size)).
+  - **Regularization**: penalties that control complexity and prevent overfitting.
+
+The model starts with an initial logit based on class distribution (e.g., if 60% of the training labels are in class 1, then the logit = log(0.6/0.4) = 0.405), which is converted into a probability using the sigmoid function (e.g., probability = 1/(1 + e<sup>-0.405</sup>) = 0.60). The probability is then used to compute the gradients and the Hessians for each sample. The gradient and the Hessian for each sample are fixed before each subsequent tree is built. 
+
+  For binary classification using log loss:
+  - **Gradient (current sample)** = predicted probability (current sample) - true label (current sample)
+    - For example: if the gradient = 0.6 - 1 = - 0.4, the prediction is too low and needs to be adjusted upward (magnitude and direction of the correction).
+  - **Hessian (current sample)** = predicted probability (current sample) * (1 - predicted probability (current sample)) 
+    - For example, if the Hessian = 0.95(1 - 0.95) = 0.0475, the model is confident, so smaller updates should be made to avoid overshooting (confidence of the correction).
+
+For each parent node, the split (feature and threshold) that maximizes the gain function (i.e., minimizes the objective function) is chosen. The algorithm uses a greedy strategy (the locally optimal split is chosen without regard for future splits). After the tree is fully grown, weak splits (i.e., where the gain is less than ```gamma```) are pruned from the leaf to the root. L1 regularization is not included in the gain function, because it involves an absolute value term, which is not differentiable at zero, and therefore requires soft-thresholding to allow a closed-form solution (which would be computationally expensive).
+  - **Gain** = objective function (parent node) - (objective function (left child node) + objective function (right child node)) - ```gamma```
+
+The decision tree effectively groups together samples with similar gradients and Hessians, as these samples require similar logit corrections (direction and magnitude) to their current predictions in order to minimize the loss function. This process continues recursively until the tree reaches a stopping condition (e.g., ```max_depth``` or ```min_child_weight```). 
+
+Within each leaf (terminal node), the optimal leaf value (logit correction), the one that minimizes the objective function, is found using a closed-form solution. 
+  - If L1 regularization is applied, soft-thresholding is used to handle the non-differentiability at zero, enabling a closed-form solution.
+
+The calculated logit correction is scaled by the learning rate (```eta```) and is prevented from exceeding the value set by ```max_delta_step```. The logit correction is then added to the current logit prediction of every sample that ended up in that leaf. The new logit predictions are then converted into probabilities using the sigmoid function and used to build the subsequent tree. This allows each tree to learn from the mistakes of the previous tree (boosting). 
+
+Trees are added sequentially until a stopping condition is reached, such as hitting the predefined number of rounds (```nrounds```) or satisfying early stopping criteria (```early_stopping_rounds```). The prediction for a sample is the sum of the initial logit and all of the logit corrections from the sequence of trees. For binary classification, the sigmoid function is applied to this final logit to produce a probability.
+
+### Feature Importance for XGBoost
+Model-agnostic methods, like ```fastshap```, need to consider all possible subsets of features to compute Shapley values, which is exponential in complexity (2<sup>number of features</sup>) and therefore typically rely on approximation methods like Monte Carlo sampling.
+  - **Shapley values**: measure the average marginal contribution of each feature across all possible combinations of features (subsets) to the model prediction. They explain how each feature contributes the output of the model (prediction) for a specific sample (local interpretability) and can be aggregated across samples to explain how each feature influences the model overall (global feature importance).
+
+Tree SHAP (SHapley Additive exPlanations) is an exact algorithm for computing SHAP values specifically for tree-based models. It uses the structure of decision trees (i.e., tree splits, leaf values, tree structure/sample paths and node cover) to compute Shapley values in polynomial time.
+  - **Tree splits**: which features and thresholds are used at each node to route samples.
+  - **Leaf values**: output value at terminal nodes (e.g., logit correction for binary classification).
+  - **Tree structure/sample paths**: how each sample flows from root to leaf based on splits.
+  - **Node cover**: the number of training samples that pass through each node.
+
+For each tree, Tree SHAP determines the change in prediction (leaf value) for a given sample caused by each feature used in a split along the path taken by that sample. The change in prediction is the difference between the prediction obtained using the actual path taken by the sample and the expected prediction without the feature (weighted by child node cover). 
+
+The difference in the prediction value is weighted by the probability that this split would be encountered by a subset of features that includes the feature used in the split (i.e., that the probability that a random subset of features contains the feature of interest and that this subset of features reaches that node). Tree SHAP derives this probability using node cover and the structure of the path from the root of that tree to the current node, specifically how many nodes occur before the current node and how many unique features are used in split decisions in these nodes. The SHAP values are summed across all trees in order to get the final SHAP values for per feature for each sample.
+
+### XGBoost Hyperparameters
+In XGBoost, important hyperparameters relate to weight regularization (L1 and L2), structural regularization and loss-guided post-tree pruning are used to prevent overfitting by discouraging large leaf weights and overly complex tree structure.
+
+**Subsampling** (```subsample```): controls the fraction of the training data that is randomly selected (without replacement) to build each tree. This introduces randomness into the training process, which helps to prevent overfitting. The default is to use all of the data (1.0). Values between 0.5 - 0.8 can potentially reduce the risk of overfitting.
+
+**Fraction of features** (```colsample_bytree```): controls the fraction of features (columns) randomly selected to train each tree. This decreases the correlation across the trees, which helps to reduce the risk of overfitting. The default is to use all of the data (1.0). Values between 0.5 - 0.8 can potentially reduce the risk of overfitting.
+  - If stronger regularization is needed, the following hyperparameters can also be modified: 
+    - ```colsample_bylevel```: controls the fraction of features randomly selected per level (often used when building deeper trees).
+    - ```colsample_bynode```: controls the fraction of features randomly selected per node (typically used if the dataset is high dimensional).
+
+**L1 regularization** (```alpha```): adds a penalty equal to the sum of the absolute values of the leaf weights scaled by ```alpha``` to the objective function. L1 encourages sparsity and prevents overfitting by pushing small leaf weights to exactly zero. This reduces overfitting by pruning splits that contribute little to no model performance. Start by setting ```alpha``` to zero (no L1 regularization), then increase the values gradually to observe whether the performance metrics improve.
+
+**L2 regularization** (```lambda```): adds a penalty equal to the sum of the squared leaf weights scaled by ```lambda``` to both the objective function and the gain function. L2 shrinks all leaf weights toward zero, discouraging large logit corrections, which helps to prevent overfitting. L2 also shrinks the magnitude of the gain for all splits, which can result in irrelevant or noisy splits being pruned from the tree if the gain is below the threshold set by ```gamma```. Start by setting ```lambda``` to zero (no L2 regularization), then increase the values gradually to observe whether the performance metrics improve.
+
+**Minimum split gain** (```gamma```): minimum gain needed for a split to be kept. After the entire tree is built in a greedy fashion, XGBoost performs loss-guided post-pruning starting from the last non-leaf node. If a split with a gain less than ```gamma``` leads to a split with a gain greater than ```gamma```, the subtree will be kept. ```gamma``` removes weak splits that don’t significantly improve the model, but doesn’t pre-prune trees before seeing their full potential. Start by setting it to zero (no pruning) and increase the values to reduce tree complexity.
+
+**Learning rate** (```eta```): scales the contribution of the logit correction of each new tree to the overall model prediction. Lower values of ```eta``` (e.g., decreasing the default value of 0.3 to 0.1, 0.05 or 0.01) make each step more conservative, but reduces the risk of overfitting. Lower values of ```eta``` generally require more trees (```nrounds```) to reach optimal performance and should be used with early stopping (```early_stopping_rounds```) during training to avoid wasting computation on unnecessary trees.
+
+**Maximum rounds** (```nrounds```): sets the maximum number of trees (boosting iterations) to perform (typically set between 500 and 1000). If it is set too low, the model will be underfit (not enough trees to capture the patterns), and if it is set too high, the model can be overfit (learns noise), especially if regularization and early stopping are not used. A smaller learning rate (```eta```) requires more trees in order to converge to a good solution.
+
+**Early stopping** (```early_stopping_rounds```): stops training early if the performance of the model on the testing dataset has not improved (based on a chosen performance metric) after a specified number of consecutive rounds (e.g., 10 - 50, depending on dataset size and training noise). This helps to prevent overfitting and speeds up training by skipping unnecessary tree building. The final model only includes the trees up to the best iteration found during training. Using this parameter also avoids the need to guess how many trees (```nrounds```) would be ideal. Instead, set ```nrounds``` generously high and allow early stopping to determine the actual number of useful trees.
+
+**Maximum depth** (```max_depth```): sets the maximum depth of each individual decision tree built during the boosting process. Lower values result in shallower trees that improve generalization, but have an increased risk of underfitting. Whereas higher values result in deeper trees that capture more patterns, but have an increased risk of overfitting. In boosting, each tree is meant to make small corrections, not learn the full structure like in random forests. Therefore, shallow trees (3 - 10) often work better.
+  - **Maximum leaves** (```max_leaves```): sets the maximum number of terminal nodes (leaves) that a decision tree is allowed to have. It is an alternative to ```max_depth``` for controlling the depth of the tree. It is more flexible and often preferred for highly imbalanced or high-dimensional datasets (prevents over-specialized deep branches that fit noisy data and/or the majority class). For small trees, set ```max_leaves``` to 16, 32 or 64.
+
+**Minimum sum of Hessians** (```min_child_weight```): the minimum sum of Hessians needed in a child node to allow a split. It prevents the model from creating nodes that only represent a very small number of observations, even if it reduces loss a little bit (which often leads to overfitting). For classification, the sum of Hessians reflects confidence in the predictions. Thus, a small sum of Hessians indicates that the model doesn’t trust the gain from the split enough to justify the complexity. Start by setting it to one (default) and increase the values if you observe overfitting. ```min_child_weight``` interacts with class imbalance. If most samples are confidently predicted early (majority class), their Hessians become small. Therefore, setting this hyperparameter too high may prevent valid splits. 
+
+**Maximum logit correction** (```max_delta_step```): limits the maximum logit corrections that can be taken during each boosting iteration. If the sum of the Hessians is very small (which can be caused by imbalanced datasets (probability set close to 0 or 1 early in training) or by saturated sigmoid outputs (probability approaching 0 or 1)), the leaf values end up being very large and learning becomes destabilized. The default is zero (no constraint). For imbalanced data, try values between 1 - 10.
+
+**Class imbalance** (```scale_pos_weight```): scales the gradients and the Hessians for the positive class (label = 1) during training. An imbalanced dataset can be biased toward the majority class and underperform on the minority class. To counter this, ```scale_pos_weight``` is commonly set to the ratio of the number of negative samples divided by the number of positive samples. This number is used to scale the gradients and the Hessians of the positive class. Larger gradients and Hessians contribute more to the gain function, resulting in increased gain from splits that separate the minority class from the majority class, and thus encouraging the model to put more importance on the minority class samples.
 
 ## Classification Performance Metrics
 Performance metrics are used to evaluate how well the model performs on the test data set (the prediction quality of the model).
