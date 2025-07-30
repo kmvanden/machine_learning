@@ -9,6 +9,8 @@ library(caret)
 library(pROC)
 library(e1071)
 library(stringr)
+library(Boruta)
+library(ggpubr)
 
 # set.seed
 set.seed(1234)
@@ -205,7 +207,7 @@ mean_importance <- all_features_importances %>%
             mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
             mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
   arrange(desc(mean_MeanDecreaseAccuracy))
-head(mean_importance, 10)
+head(mean_importance, 20)
 
 ### plot species with highest MeanDecreaseAccuracy
 ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
@@ -229,6 +231,373 @@ ggplot(metagen, aes(x = Clostridium_sp._M62.1)) +
        x = "Abundance", y = "Density of Samples", fill = "Condition") +
   theme_minimal()
 
+
+################################################################################
+###   OVERALL RANDOM FOREST - 5-FOLD CROSS-VALIDATION + 50 REPEATS - BORUTA  ###
+################################################################################
+
+# data to be used in the model
+str(metagen)
+
+# set seed
+set.seed(1234)
+
+# column names for features to be included in model (full predictor set)
+all_feat_cols <- setdiff(colnames(metagen), "condition")
+
+# create lists to store metrics
+feature_importances <- list()      # list to store feature importances
+performance_metrics <- list()      # list to store performance metrics
+feature_frequencies <- list()      # list to store feature selection frequencies
+boruta_selected_features <- list() # list to store Boruta selected features per fold
+
+# repeat cross-validation 50 times
+for (r in 1:50) {
+  cat("Repeat:", r, "\n")
+  
+  # create 5-folds for cross-validation (stratified on condition)
+  folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+  
+  # loop through the folds
+  for (f in 1:5) {
+    
+    # split dataset into training and testing sets for current fold
+    test_idx <- folds[[f]] # test indices for the f-th fold
+    train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
+    test_data  <- metagen[test_idx, ] # testing data (fold f)
+    
+    # identify relevant features in training data with Boruta 
+    boruta_result <- Boruta(x = train_data[, all_feat_cols], 
+                            y = as.factor(train_data$condition),
+                            doTrace = 0)
+    
+    # resolve tentative features
+    boruta_final <- TentativeRoughFix(boruta_result)
+    
+    # select confirmed Boruta features only
+    confirmed_feats <- getSelectedAttributes(boruta_final, withTentative = FALSE)
+    
+    # use all features if there are no Boruta confirmed features
+    if (length(confirmed_feats) == 0) {
+      warning(paste("No Boruta confirmed features in Repeat", r, "Fold", f))
+      confirmed_feats <- all_feat_cols
+    }
+    
+    # train random forest model using Boruta selected features
+    rf_model <- randomForest(x = train_data[, confirmed_feats, drop = FALSE], 
+                             y = as.factor(train_data$condition), 
+                             ntree = 500, importance = TRUE) 
+    
+    # evaluate on test set (using on Boruta selected features)
+    predictions <- predict(rf_model, newdata = test_data[, confirmed_feats, drop = FALSE])
+    
+    # count how often each feature is used in the trees
+    tree_split_vars <- unlist(lapply(1:rf_model$ntree, function(t) {
+      tree <- getTree(rf_model, k = t, labelVar = TRUE)
+      as.character(tree$`split var`[tree$`split var` != "<leaf>"])
+    }))
+    # count the occurrences of each feature
+    split_counts <- table(tree_split_vars)
+    
+    # generate confusion matrix
+    cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+    
+    # store with repeat (r) and fold (f) index
+    key <- paste0("Repeat_", r, "_Fold_", f) 
+    feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
+    performance_metrics[[key]] <- cm # store performance metrics
+    feature_importances[[key]] <- importance(rf_model) # store feature importances
+    boruta_selected_features[[key]] <- confirmed_feats # store Botuta selected features
+  }
+}
+
+### feature frequency and importance analyses only use Boruta-selected features
+
+### calculate feature frequencies
+all_splits <- bind_rows(feature_frequencies, .id = "Repeat_Fold") # combine frequencies into a single data.frame
+colnames(all_splits) <- c("Repeat_Fold", "Feature", "Count") # rename columns
+
+# summarize total and average counts
+feature_split_summary <- all_splits %>%
+  group_by(Feature) %>%
+  summarise(total_count = sum(Count, na.rm = TRUE),
+            mean_count = mean(Count, na.rm = TRUE),
+            n_models = n()) %>%
+  arrange(desc(total_count))
+head(feature_split_summary, 20)
+
+# calculate relative frequency of feature selection
+feature_split_summary <- feature_split_summary %>%
+  mutate(prop_models = n_models / length(feature_frequencies),
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+
+# total number of models where feature was used at least once
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = n_models)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features (Boruta) RF",
+       x = "Feature", y = "Number of models")
+
+# average number of times feature was used in a split per tree (across all models) 
+# 250 models (50 repeats x 5-fold CV) each with 500 trees (125,000 trees in total)
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features (Boruta) RF",
+       x = "Feature", y = "Number of models")
+
+
+### calculate performance statistics
+# create vectors to store metrics
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+
+# extract metrics from the stored confusion matrices (50 repeats x 5 folds = 250 values)
+for (cm in performance_metrics) {
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+}
+
+# combine metrics in a summary table
+metric_summary <- data.frame(mean_bal_acc = mean(balanced_accuracy, na.rm = TRUE),
+                             sd_bal_acc = sd(balanced_accuracy, na.rm = TRUE),
+                             mean_f1 = mean(f1_score, na.rm = TRUE),
+                             sd_f1 = sd(f1_score, na.rm = TRUE),
+                             mean_sens = mean(sensitivity, na.rm = TRUE),
+                             sd_sens = sd(sensitivity, na.rm = TRUE),
+                             mean_spec = mean(specificity, na.rm = TRUE),
+                             sd_spec = sd(specificity, na.rm = TRUE))
+metric_summary
+
+
+### calculate feature importances
+# combine all feature_importances data.frames into one data.frame
+all_features_importances <- do.call(rbind, lapply(names(feature_importances), function(name) {
+  df <- as.data.frame(feature_importances[[name]])
+  df$Feature <- rownames(df)
+  df$Repeat_Fold <- name
+  return(df)
+}))
+
+# group importance metrics by feature and sort by overall importance
+mean_importance <- all_features_importances %>%
+  group_by(Feature) %>%
+  summarise(mean_healthy = mean(healthy, na.rm = TRUE),
+            mean_disease = mean(disease, na.rm = TRUE),
+            mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
+            mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
+  arrange(desc(mean_MeanDecreaseAccuracy))
+head(mean_importance, 20)
+
+### plot species with highest MeanDecreaseAccuracy
+ggplot(metagen, aes(x = Atlantibacter_hermannii)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Atlantibacter hermannii",
+       x = "Abundance", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggboxplot(metagen, x = "condition", y = "Atlantibacter_hermannii",
+          color = "condition", add = "jitter") +
+  stat_compare_means(method = "wilcox.test") +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Atlantibacter hermannii",
+       y = "Relative Abundance") +
+  theme_minimal()
+
+ggplot(metagen, aes(x = Filifactor_alocis)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Filifactor alocis",
+       x = "Abundance", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggboxplot(metagen, x = "condition", y = "Filifactor_alocis",
+          color = "condition", add = "jitter") +
+  stat_compare_means(method = "wilcox.test") +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Filifactor alocis",
+       y = "Relative Abundance") +
+  theme_minimal()
+
+ggplot(metagen, aes(x = Actinomyces_wuliandei)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Actinomyces wuliandei",
+       x = "Abundance", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggboxplot(metagen, x = "condition", y = "Actinomyces_wuliandei",
+          color = "condition", add = "jitter") +
+  stat_compare_means(method = "wilcox.test") +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Actinomyces wuliandei",
+       y = "Relative Abundance") +
+  theme_minimal()
+
+
+### Boruta feature selection frequency (across repeats and folds)
+# how often feature was selected across models (50 repeats x 5 folds = 250)
+boruta_feature_counts <- table(unlist(boruta_selected_features))
+boruta_feature_summary <- as.data.frame(boruta_feature_counts)
+colnames(boruta_feature_summary) <- c("feature", "times_selected")
+boruta_feature_summary$prop_selected <- boruta_feature_summary$times_selected/length(boruta_selected_features) # proportion selected
+boruta_feature_summary <- boruta_feature_summary[order(-boruta_feature_summary$times_selected), ]
+head(boruta_feature_summary, 20)
+
+### plot feature selection stability
+ggplot(boruta_feature_summary[1:20, ], aes(x = reorder(feature, times_selected), y = times_selected)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 20 most frequently selected features by Boruta",
+       x = "Feature", y = "Times selected across 250 models")
+
+# features never selected (never considered relevant by Boruta)
+never_selected <- setdiff(all_feat_cols, unique(unlist(boruta_selected_features)))
+
+### frequency of use in splits (useful in early splits to reduce Gini impurity) -> univariate discriminative power
+### meanDecreaseAccuracy (performance drops when feature is permutated) 
+# possibly in deeper splits (disambiguate edge cases, work in combination with others, redundant or correlated patterns that boost stability)
+
+############################ SPLIT DEPTH OF FEATURES ###########################
+
+# data to be used in the model
+str(metagen)
+
+# set seed
+set.seed(1234)
+
+# column names for features to be included in model (full predictor set)
+all_feat_cols <- setdiff(colnames(metagen), "condition")
+
+# create lists to store metrics
+feature_importances <- list() # list to store feature importances
+performance_metrics <- list() # list to store performance metrics
+feature_frequencies <- list() # list to store feature selection frequencies
+boruta_selected_features <- list() # list to store Boruta selected features per fold
+feature_split_depths <- list() # list to store split depths
+
+# repeat cross-validation 50 times
+for (r in 1:50) {
+  cat("Repeat:", r, "\n")
+  
+  # create 5-folds for cross-validation (stratified on condition)
+  folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+  
+  # loop through the folds
+  for (f in 1:5) {
+    
+    # split dataset into training and testing sets for current fold
+    test_idx <- folds[[f]] # test indices for the f-th fold
+    train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
+    test_data  <- metagen[test_idx, ] # testing data (fold f)
+    
+    # identify relevant features in training data with Boruta 
+    boruta_result <- Boruta(x = train_data[, all_feat_cols], 
+                            y = as.factor(train_data$condition),
+                            doTrace = 0)
+    
+    # resolve tentative features
+    boruta_final <- TentativeRoughFix(boruta_result)
+    
+    # select confirmed Boruta features only
+    confirmed_feats <- getSelectedAttributes(boruta_final, withTentative = FALSE)
+    
+    # use all features if there are no Boruta confirmed features
+    if (length(confirmed_feats) == 0) {
+      warning(paste("No Boruta confirmed features in Repeat", r, "Fold", f))
+      confirmed_feats <- all_feat_cols
+    }
+    
+    # train random forest model using Boruta selected features
+    rf_model <- randomForest(x = train_data[, confirmed_feats, drop = FALSE], 
+                             y = as.factor(train_data$condition), 
+                             ntree = 500, importance = TRUE) 
+    
+    # evaluate on test set (using on Boruta selected features)
+    predictions <- predict(rf_model, newdata = test_data[, confirmed_feats, drop = FALSE])
+    
+    # count how often each feature is used in the trees
+    tree_split_vars <- unlist(lapply(1:rf_model$ntree, function(t) {
+      tree <- getTree(rf_model, k = t, labelVar = TRUE)
+      as.character(tree$`split var`[tree$`split var` != "<leaf>"])
+    }))
+    
+    # collect feature split depths
+    split_depths <- data.frame()
+    
+    for (t in 1:rf_model$ntree) {
+      tree <- getTree(rf_model, k = t, labelVar = TRUE)
+      n_nodes <- nrow(tree)
+      node_depths <- rep(NA, n_nodes)
+      node_depths[1] <- 0  # root node
+      
+      # calculate depth of each node
+      for (n in 2:n_nodes) {
+        parent <- which(tree$`left daughter` == n | tree$`right daughter` == n)
+        if (length(parent) == 1) {
+          node_depths[n] <- node_depths[parent] + 1
+        }
+      }
+      
+      # record feature and depth
+      for (n in 1:n_nodes) {
+        feature <- as.character(tree$`split var`[n])
+        if (!is.na(feature) && feature != "<leaf>") {
+          split_depths <- rbind(split_depths, data.frame(
+            Repeat = r,
+            Fold = f,
+            Tree = t,
+            Feature = feature,
+            Depth = node_depths[n]
+          ))
+        }
+      }
+    }
+    
+    # count the occurrences of each feature
+    split_counts <- table(tree_split_vars)
+    
+    # generate confusion matrix
+    cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+    
+    # store with repeat (r) and fold (f) index
+    key <- paste0("Repeat_", r, "_Fold_", f) 
+    feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
+    performance_metrics[[key]] <- cm # store performance metrics
+    feature_importances[[key]] <- importance(rf_model) # store feature importances
+    boruta_selected_features[[key]] <- confirmed_feats # store Botuta selected features
+    feature_split_depths[[key]] <- split_depths # store split depths of features
+  }
+}
+
+# combine all depth data
+all_depths <- do.call(rbind, feature_split_depths)
+
+# subset all depths for top 20 important features when using Boruta
+all_depths_Boruta <- all_depths[all_depths$Feature %in% Boruta_important, ] 
+all_depths_Boruta$importance <- "Boruta"
+
+# subset all depths for top 20 important features when not using Boruta
+all_depths_noBoruta <- all_depths[all_depths$Feature %in% noBoruta_important, ]
+all_depths_noBoruta$importance <- "noBoruta"
+
+# combine data.frames to plot
+all_depths_importance <- rbind(all_depths_Boruta, all_depths_noBoruta)
+
+# violin plot to see full depth distributions
+ggplot(all_depths_importance, aes(x = importance, y = Depth, fill = importance)) +
+  geom_violin(trim = FALSE) +     
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+  labs(title = "Split depth distribution by feature category",
+       y = "Split Depth",
+       x = "Feature category") +
+  theme_minimal()
+
+############################ SPLIT DEPTH OF FEATURES ###########################
+
+# difference in importance is not due to a difference in split depth
 
 #######################################################################################################
 ###   OVERALL RANDOM FOREST - 5-FOLD CROSS-VALIDATION + 50 REPEATS - RECURSIVE FEATURE ELIMINATION  ###
@@ -255,6 +624,8 @@ feature_sizes <- c(10, 25, 50, 75, 100, 200, 400, 600, 800, 935)
 
 # create list to store performance metrics
 performance_metrics <- list() # list to store performance metrics
+feature_frequencies <- list() # list to store feature selection frequencies
+feature_importances <- list() # list to store feature importances
 
 # repeat cross-validation 50 times
 for (r in 1:50) {
@@ -280,7 +651,7 @@ for (r in 1:50) {
     full_importance <- importance(full_rf)
     importance_df <- as.data.frame(full_importance)
     importance_df$Feature <- rownames(importance_df)
-
+    
     top_features_by_acc <- importance_df %>%
       arrange(desc(MeanDecreaseAccuracy)) %>%
       pull(Feature)
@@ -299,9 +670,6 @@ for (r in 1:50) {
       predictions <- predict(rf_model, newdata = test_data[, selected_feats], type = "response") # predicted class labels for cm
       probabilities <- predict(rf_model, newdata = test_data[, selected_feats], type = "prob") # class probabilities (ROC/AUC)
       
-      # generate confusion matrix
-      cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
-      
       # calculate AUC
       roc_obj <- roc(response = test_data$condition,
                      predictor = probabilities[, "disease"],
@@ -309,12 +677,98 @@ for (r in 1:50) {
                      direction = "<")
       auc_value <- auc(roc_obj)
       
+      # count how often each feature is used in the trees
+      tree_split_vars <- unlist(lapply(1:rf_model$ntree, function(t) {
+        tree <- getTree(rf_model, k = t, labelVar = TRUE)
+        as.character(tree$`split var`[tree$`split var` != "<leaf>"])
+      }))
+      # count the occurrences of each feature 
+      split_counts <- table(tree_split_vars)
+      
+      # generate confusion matrix
+      cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+      
       # store with repeat (r) and fold (f) index
       key <- paste0("Repeat_", r, "_Fold_", f, "_N_", n_feat)
+      feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
       performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+      feature_importances[[key]] <- importance(rf_model) # store feature importances
     }
   }
 }
+
+### calculate feature frequencies
+all_splits <- bind_rows(feature_frequencies, .id = "Repeat_Fold") # combine frequencies into a single data.frame
+colnames(all_splits) <- c("Repeat_Fold", "Feature", "Count") # rename columns
+
+# summarize total and average counts
+feature_split_summary <- all_splits %>%
+  group_by(Feature) %>%
+  summarise(total_count = sum(Count, na.rm = TRUE),
+            mean_count = mean(Count, na.rm = TRUE),
+            n_models = n()) %>%
+  arrange(desc(total_count))
+head(feature_split_summary, 20)
+
+# calculate relative frequency of feature selection
+feature_split_summary <- feature_split_summary %>%
+  mutate(prop_models = n_models / length(feature_frequencies),
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+
+# total number of models where feature was used at least once
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = n_models)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features by RF-based RFE",
+       x = "Feature", y = "Number of models")
+
+# average number of times feature was used in a split per tree (across all models) 
+# 250 models (50 repeats x 5-fold CV) each with 500 trees (125,000 trees in total)
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features by RF-based RFE",
+       x = "Feature", y = "Average splits per tree")
+
+
+### calculate feature importances
+# combine all feature_importances data.frames into one data.frame
+all_features_importances <- do.call(rbind, lapply(names(feature_importances), function(name) {
+  df <- as.data.frame(feature_importances[[name]])
+  df$Feature <- rownames(df)
+  df$Repeat_Fold <- name
+  return(df)
+}))
+
+# group importance metrics by feature and sort by overall importance
+mean_importance <- all_features_importances %>%
+  group_by(Feature) %>%
+  summarise(mean_healthy = mean(healthy, na.rm = TRUE),
+            mean_disease = mean(disease, na.rm = TRUE),
+            mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
+            mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
+  arrange(desc(mean_MeanDecreaseAccuracy))
+head(mean_importance, 20)
+
+### plot species with highest MeanDecreaseAccuracy
+ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Lachnoclostridium sp. YL32",
+       x = "Abundance", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggplot(metagen, aes(x = Anaerobutyricum_hallii)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Anaerobutyricum hallii",
+       x = "Abundance", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggplot(metagen, aes(x = Clostridium_sp._M62.1)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Clostridium sp. M62.1",
+       x = "Abundance", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
 
 ### calculate performance statistics
 # create vectors to store metrics
