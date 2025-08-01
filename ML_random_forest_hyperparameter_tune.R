@@ -4,6 +4,7 @@
 library(ggplot2)
 library(cowplot)
 library(tidyverse)
+library(compositions)
 library(randomForest)
 library(caret)
 library(pROC)
@@ -36,27 +37,18 @@ table(meta$condition)
 feat <- read.table("feature_table.txt", header = TRUE)
 
 ### filter species present in less than 10% of samples
-dim(feat) # 2302   70
-presence_threshold <- 0.10 * ncol(feat) # needs to be in at least 7 samples
-features_to_keep <- rowSums(feat != 0) >= presence_threshold # determine if the feature is present >=10% of samples
-feat_filt <- feat[features_to_keep, ] # subset the feature table to only include features present in at least 10% of samples
-dim(feat_filt) # 935  70
+feat_t <- as.data.frame(t(feat)) # transpose feature table
+min_prevalence <- 0.10
+feat_filtered <- feat_t[, colMeans(feat_t > 0) >= min_prevalence] # subset the feature table to only include features present in at least 10% of samples
+dim(feat_filtered) # 70 935
 
 # convert feature table to relative abundances
-feat_rel <- sweep(feat_filt, 2, colSums(feat_filt), FUN = "/")
-feat_rel <- as.data.frame(feat_rel)
+feat_rel_abund <- feat_filtered/rowSums(feat_filtered)
 
-### add pseudocount and perform log-transform
-log_n0 <- 1e-6 # pseudocount
-feat_log <- t(feat_rel) # transpose feature table
-feat_log <- log(feat_log + log_n0)
-feat_log <- as.data.frame(feat_log)
-
-# perform row-wise L2 normalization (SIAMCAT)
-n_p <- 2 # L2 norm 
-row_norms <- sqrt(rowSums(feat_log^n_p))
-feat_lognorm <- sweep(feat_log, 1, row_norms, FUN = "/")
-feat <- as.data.frame(feat_lognorm)
+# add pseudocount and perform CLR transformation
+feat_rel_abund[feat_rel_abund == 0] <- 1e-6
+feat_clr <- clr(feat_rel_abund)
+feat <- as.data.frame(feat_clr)
 
 
 # rownames of metadata need to match the rownames of the feature table
@@ -1333,8 +1325,12 @@ bal_acc <- sapply(outer_results, function(res) {
   mean(c(sens, spec))
 })
 
+# # combine hyperparameters, auc and balanced accuracy into data.frame
+# results_df <- data.frame(param_summary, auc = auc, bal_acc = bal_acc)
+
 # combine hyperparameters, auc and balanced accuracy into data.frame
-results_df <- data.frame(param_summary, auc = auc, bal_acc = bal_acc)
+results_df <- data.frame(params_df, auc = auc, bal_acc = bal_acc)
+
 
 # hyperparameter combination with the highest mean auc
 best_combo_auc <- results_df %>%
@@ -1347,31 +1343,6 @@ best_combo_bal_acc <- results_df %>%
   group_by(feature_size, classwt_label, mtry, nodesize) %>%
   summarise(mean_bal_acc = mean(bal_acc), .groups = "drop") %>%
   arrange(desc(mean_bal_acc))
-
-
-sapply(outer_results, function(res) length(res$confusion$table))
-
-
-# train a final model on full dataset
-final_feature_size <- 75
-final_classwt <- weight_grid[["equal"]]
-final_mtry <- 75
-final_nodesize <- 10
-
-rf_full <- randomForest(x = metagen[, all_feat_cols],
-                        y = metagen$condition,
-                        ntree = 500,
-                        classwt = final_classwt,
-                        importance = TRUE)
-
-feats <- names(sort(importance(rf_full)[, "MeanDecreaseAccuracy"], decreasing = TRUE))[1:final_feature_size]
-
-rf_final <- randomForest(x = metagen[, feats],
-                         y = metagen$condition,
-                         ntree = 500,
-                         classwt = final_classwt,
-                         mtry = final_mtry,
-                         nodesize = final_nodesize)
 
 
 ################################################################################################################
@@ -1407,8 +1378,8 @@ scoring_function <- function(feature_size, mtry, nodesize, classwt_label) {
     
     # feature selection on inner training split
     idx <- inner_folds[[i]]
-    inner_tr <- metagen[-idx, ]
-    inner_val <- metagen[idx, ]
+    inner_tr <- metagen[idx, ]
+    inner_val <- metagen[-idx, ]
     
     rf_full <- tryCatch({
       randomForest(inner_tr[, all_feat_cols],
@@ -1481,105 +1452,196 @@ getBestPars(optObj) # optimal combination of hyperparameters
 
 
 ### loop over each outer fold to evaluate true generalization performance of final model using best hyperparameters
-# extract best values
-fs_best <- 100
-m_best  <- 50
-ns_best <- 5
-cw_best <- c(healthy = 1, disease = 2)
+# set best values for hyperparameters
+fs_best <- 150 # feature size
+m_best  <- 100 # mtry
+ns_best <- 10 # node size
+cw_best <- c(healthy = 1, disease = 2) # class weight settings
+
+# create lists to store metrics
+final_feature_importances <- list() # list to store final feature importances
+final_performance_metrics <- list() # list to store final model performances
+final_feature_frequencies <- list() # list to store final feature frequencies
+final_auc <- numeric() # to store auc values
 
 # set seed
 set.seed(1234)
 
-# outer cross-validation set-up
-outer_control <- createMultiFolds(metagen$condition, k = 5, times = 10)
+# 10 repeats of stratified 5-fold cross-validation (50 models)
+outer_folds <- createMultiFolds(metagen$condition, k = 5, times = 10)
 
-# create lists to store metrics
-outer_results <- list() # create list to store results from outer folds
-importance_list <- list()  # create list to store feature importances
-
-for (outer in names(outer_control)) {
+# loop over the folds
+for (f in seq_along(outer_folds)) {
+  cat("Outer Fold:", f, "\n")
   
-  # training and testing data for outer fold
-  train_idx <- outer_control[[outer]]
-  test_idx  <- setdiff(seq_len(nrow(metagen)), train_idx) # testing index
-  train_df <- metagen[train_idx, ] # training data
-  test_df  <- metagen[test_idx, ] # testing data
+  # splits the dataset into training and testing sets
+  train_idx <- outer_folds[[f]] # train indices
+  train_data <- metagen[train_idx, ] # training data
+  test_data  <- metagen[-train_idx, ] # testing data
   
-  # re-factor levels
-  train_df$condition <- factor(train_df$condition, levels = c("healthy","disease"))
-  test_df$condition  <- factor(test_df$condition, levels = c("healthy","disease"))
-  
-  rf_full <- randomForest(x = train_df[, all_feat_cols],
-                          y = train_df$condition,
+  # train full random forest model only for feature selection
+  rf_full <- randomForest(train_data[, all_feat_cols],
+                          train_data$condition,
                           ntree = 500,
                           classwt = cw_best,
                           importance = TRUE)
   
-  # store importance score for all features
-  importance_list[[outer]] <- importance(rf_full)[, "MeanDecreaseAccuracy"]
+  # select top fs_best features by MeanDecreaseAccuracy
+  imp_vals <- importance(rf_full)[, "MeanDecreaseAccuracy"]
+  top_feats <- names(sort(imp_vals, decreasing = TRUE))[1:fs_best]
   
-  # select top features for use in final model
-  feats <- names(sort(imp, decreasing = TRUE))[1:fs_best]
-  
-  # train final random forest on selected features
-  rf_final <- randomForest(x = train_df[, feats],
-                           y = train_df$condition,
+  # train final random forest model with selected features
+  rf_final <- randomForest(train_data[, top_feats],
+                           train_data$condition,
                            ntree = 500,
                            classwt = cw_best,
                            mtry = m_best,
-                           nodesize = ns_best)
+                           nodesize = ns_best,
+                           importance = TRUE)
   
-  # evaluate on test data
-  prt <- predict(rf_final, test_df[, feats], type = "prob")[, "disease"]
+  # evaluate on test set
+  preds <- predict(rf_final, test_data[, top_feats])
+  probs <- predict(rf_final, test_data[, top_feats], type = "prob")
   
-  # calculate ROC AUC
-  roc_obj <- roc(test_df$condition, prt,
-                 levels = c("healthy", "disease"),
-                 direction = "<")
+  # generate confusion matrix
+  cm <- confusionMatrix(preds, test_data$condition, positive = "disease")
   
-  # generate confusion matrix 
-  cm <- confusionMatrix(predict(rf_final, test_df[, feats]),
-                        test_df$condition,
-                        positive = "disease")
+  # feature frequency from split variables
+  split_vars <- unlist(lapply(1:rf_final$ntree, function(t) {
+    tree <- getTree(rf_final, k = t, labelVar = TRUE)
+    as.character(tree$`split var`[tree$`split var` != "<leaf>"])
+  }))
+  split_counts <- table(split_vars) # count the occurrences of each feature
+  feature_freq_df <- as.data.frame(split_counts)
+  colnames(feature_freq_df) <- c("Feature", "Count")
   
-  # store results
-  outer_results[[outer]] <- list(test_auc = auc(roc_obj),
-                                 balanced_accuracy = mean(c(cm$byClass["Sensitivity"], cm$byClass["Specificity"])),
-                                 confusion = cm)
+  # auc values
+  roc_obj <- pROC::roc(response = test_data$condition,
+                       predictor = probs[, "disease"],
+                       levels = c("healthy", "disease"),
+                       direction = "<")
+  auc_val <- as.numeric(pROC::auc(roc_obj))
+  
+  # store with repeat/fold (f) index
+  key <- paste0("Model_", f)
+  final_feature_importances[[key]] <- importance(rf_final) # store feature importances
+  final_performance_metrics[[key]] <- cm # store confusion matrices
+  final_feature_frequencies[[f]] <- feature_freq_df # store feature frequencies
+  final_auc <- c(final_auc, auc_val) # store auc values
 }
 
-### performance metrics
-# summarize and aggregate results
-auc <- sapply(outer_results, `[[`, "test_auc") # extract all test AUCs
-bal_acc <- sapply(outer_results, `[[`, "balanced_accuracy")
+### calculate performance statistics
+# create vectors to store metrics from confusion matrices
+final_bal_acc <- final_f1 <- final_sens <- final_spec <- numeric()
 
-summary_df <- data.frame(fold = names(outer_results),
-                         auc = auc, bal_acc = bal_acc)
+# loop over confusion matrices
+for (cm in final_performance_metrics) {
+  final_bal_acc <- c(final_bal_acc, cm$byClass["Balanced Accuracy"])
+  final_f1 <- c(final_f1, cm$byClass["F1"])
+  final_sens <- c(final_sens, cm$byClass["Sensitivity"])
+  final_spec <- c(final_spec, cm$byClass["Specificity"])
+}
 
-# mean auc and balanced accuracy
-summary_metrics <- list(mean_auc = mean(auc),
-                        sd_auc = sd(auc),
-                        mean_bal_acc = mean(bal_acc),
-                        sd_bal_acc = sd(bal_acc))
+# summary dat.frame of performance metrics
+final_metric_summary <- data.frame(mean_bal_acc = mean(final_bal_acc, na.rm = TRUE),
+                                   sd_bal_acc = sd(final_bal_acc, na.rm = TRUE),
+                                   mean_f1 = mean(final_f1, na.rm = TRUE),
+                                   sd_f1 = sd(final_f1, na.rm = TRUE),
+                                   mean_sens = mean(final_sens, na.rm = TRUE),
+                                   sd_sens = sd(final_sens, na.rm = TRUE),
+                                   mean_spec = mean(final_spec, na.rm = TRUE),
+                                   sd_spec = sd(final_spec, na.rm = TRUE),
+                                   mean_auc = mean(final_auc, na.rm = TRUE),
+                                   sd_auc = sd(final_auc, na.rm = TRUE),
+                                   min_auc = min(final_auc, na.rm = TRUE),
+                                   max_auc = max(final_auc, na.rm = TRUE))
+final_metric_summary
 
-### feature importance
-importance_df <- do.call(cbind, importance_list) # combine all importances into one data.frame
-importance_df_norm <- apply(importance_df, 2, function(x) x / sum(x, na.rm = TRUE)) # normalize importance within each fold
-mean_importance <- rowMeans(importance_df_norm, na.rm = TRUE) # average importance across folds
-top_features <- sort(mean_importance, decreasing = TRUE)[1:20] # top features by average normalized importance
-top_features
+### combine all feature importances
+final_all_importances <- do.call(rbind, lapply(names(final_feature_importances), function(name) {
+  df <- as.data.frame(final_feature_importances[[name]])
+  df$Feature <- rownames(df)
+  df$Model <- name
+  return(df)
+}))
+
+# calculate average MeanDecreaseAccuracy across all 50 models
+final_mean_importance <- final_all_importances %>%
+  group_by(Feature) %>%
+  summarise(mean_healthy = mean(healthy, na.rm = TRUE),
+            mean_disease = mean(disease, na.rm = TRUE),
+            mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
+            mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
+  arrange(desc(mean_MeanDecreaseAccuracy))
+head(final_mean_importance, 20)
+
+# plot species with highest MeanDecreaseAccuracy
+ggplot(head(final_mean_importance, 20), 
+       aes(x = reorder(Feature, mean_MeanDecreaseAccuracy), y = mean_MeanDecreaseAccuracy)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() + 
+  labs(title = "Top 20 most important features by meanDecreaseAccuracy",
+       x = "Feature", y = "MeanDecreaseAccuracy")
+
+# plot abundance of top species
+ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Lachnoclostridium sp. YL32",
+       x = "Abundance", y = "Density of samples", fill = "Condition") +
+  theme_minimal()
+
+# plot abundance of top species
+ggplot(metagen, aes(x = Acutalibacter_muris)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative species",
+       subtitle = "Acutalibacter muris",
+       x = "Abundance", y = "Density of samples", fill = "Condition") +
+  theme_minimal()
+
+### combine all feature frequencies into one data.frame
+final_all_splits <- bind_rows(final_feature_frequencies, .id = "Model")
+
+# summarize how often each feature appeared and how frequently it was used
+final_feature_split_summary <- final_all_splits %>%
+  group_by(Feature) %>%
+  summarise(total_count = sum(Count, na.rm = TRUE),
+            mean_count = mean(Count, na.rm = TRUE),
+            n_models = n()) %>%
+  arrange(desc(total_count))
+head(final_feature_split_summary, 20)
+
+# calculate relative feature frequency selection
+final_feature_split_summary <- final_feature_split_summary %>%
+  mutate(prop_models = n_models/length(final_feature_frequencies),
+         avg_per_tree = total_count/(length(final_feature_frequencies) * rf_final$ntree)) 
+
+# plot total number of models where feature was used (top 30 features by frequency)
+ggplot(head(final_feature_split_summary, 30), aes(x = reorder(Feature, total_count), y = n_models)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features in splits",
+       x = "Feature", y = "Number of models")
 
 
-### final model training
-# full dataset with best hyperparameters and best feature subset (fs_best)
+# plot average number of models where feature was used (top 30 features by frequency)
+ggplot(head(final_feature_split_summary, 30), aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features in splits",
+       x = "Feature", y = "Frequency of selection")
+
+
+### final model training - full dataset with best hyperparameters and best feature subset (fs_best)
+# feature selection
 rf_full_final <- randomForest(x = metagen[, all_feat_cols],
                               y = metagen$condition,
                               ntree = 500,
                               classwt = cw_best,
                               importance = TRUE)
+
+# select features
 imp_final <- importance(rf_full_final)[, "MeanDecreaseAccuracy"]
 final_feats <- names(sort(imp_final, decreasing = TRUE))[1:fs_best]
 
+# final model using selected features and optimal parameters
 rf_final_model <- randomForest(x = metagen[, final_feats],
                                y = metagen$condition,
                                ntree = 500,
@@ -1589,7 +1651,6 @@ rf_final_model <- randomForest(x = metagen[, final_feats],
 
 ### save final model 
 saveRDS(rf_final_model, file = "rf_final_model.rds")
-saveRDS(final_feats, file = "selected_features.rds") # save selected features
 
 
 ################################################################################
