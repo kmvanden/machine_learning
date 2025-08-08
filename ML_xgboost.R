@@ -63,10 +63,9 @@ colnames(metagen) <- make.names(colnames(metagen))
 
 ### for xgboost analysis
 # convert condition to numeric (0 = healthy, 1 = disease)
-metagen$condition_numeric <- as.numeric(metagen$condition) - 1
+metagen$condition_numeric <- ifelse(metagen$condition == "disease", 1, 0)
 # set factor labels (healthy = negative, disease = positive)
 metagen$condition <- factor(metagen$condition, levels = c("healthy", "disease"))
-
 
 # set predictor columns
 all_feat_cols <- setdiff(colnames(metagen), c("condition", "condition_numeric"))
@@ -987,9 +986,9 @@ plot_logloss_gap <- function(logloss_gap_df, param_name = "eta") {
 plot_logloss_gap(logloss_gap_eta, param_name = "eta")
 
 
-##################################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - CLASS WEIGHTS   #######
-##################################################################################################
+#############################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - CLASS WEIGHTS   #######
+#############################################################################################
 
 
 ### run xgboost model
@@ -1066,9 +1065,9 @@ logloss_gap_class_weight <- prepare_logloss_gap(logloss_class_weight, param_name
 plot_logloss_gap(logloss_gap_class_weight, param_name = "scale_pos_weight")
 
 
-##############################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - MAX DEPTH   #######
-##############################################################################################
+#########################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MAX DEPTH   #######
+#########################################################################################
 
 
 ### run xgboost model
@@ -1145,9 +1144,9 @@ logloss_gap_max_depth <- prepare_logloss_gap(logloss_max_depth, param_name = "ma
 plot_logloss_gap(logloss_gap_max_depth, param_name = "max_depth")
 
 
-#####################################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - MIN CHILD WEIGHT   #######
-#####################################################################################################
+################################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MIN CHILD WEIGHT   #######
+################################################################################################
 
 
 ### run xgboost model
@@ -1224,9 +1223,9 @@ logloss_gap_min_child_weight <- prepare_logloss_gap(logloss_min_child_weight, pa
 plot_logloss_gap(logloss_gap_min_child_weight, param_name = "min_child_weight")
 
 
-##############################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - SUBSAMPLE   #######
-##############################################################################################
+#########################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - SUBSAMPLE   #######
+#########################################################################################
 
 
 ### run xgboost model
@@ -1303,9 +1302,9 @@ logloss_gap_subsample <- prepare_logloss_gap(logloss_subsample, param_name = "su
 plot_logloss_gap(logloss_gap_subsample, param_name = "subsample")
 
 
-#####################################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYTREE   #######
-#####################################################################################################
+################################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYTREE   #######
+################################################################################################
 
 
 ### run xgboost model
@@ -1382,9 +1381,9 @@ logloss_gap_colsample_bytree <- prepare_logloss_gap(logloss_colsample_bytree, pa
 plot_logloss_gap(logloss_gap_colsample_bytree, param_name = "colsample_bytree")
 
 
-#####################################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYNODE   #######
-#####################################################################################################
+################################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYNODE   #######
+################################################################################################
 
 
 ### run xgboost model
@@ -1461,9 +1460,9 @@ logloss_gap_colsample_bynode <- prepare_logloss_gap(logloss_colsample_bynode, pa
 plot_logloss_gap(logloss_gap_colsample_bynode, param_name = "colsample_bynode")
 
 
-###########################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - LAMBDA   #######
-###########################################################################################
+######################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - LAMBDA   #######
+######################################################################################
 
 
 ### run xgboost model
@@ -1540,9 +1539,9 @@ logloss_gap_lambda <- prepare_logloss_gap(logloss_lambda, param_name = "lambda")
 plot_logloss_gap(logloss_gap_lambda, param_name = "lambda") 
 
 
-##########################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - ALPHA   #######
-##########################################################################################
+#####################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - ALPHA   #######
+#####################################################################################
 
 
 ### run xgboost model
@@ -1619,9 +1618,9 @@ logloss_gap_alpha <- prepare_logloss_gap(logloss_alpha, param_name = "alpha")
 plot_logloss_gap(logloss_gap_alpha, param_name = "alpha") 
 
 
-##########################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - GAMMA   #######
-##########################################################################################
+#####################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - GAMMA   #######
+#####################################################################################
 
 
 ### run xgboost model
@@ -1698,9 +1697,9 @@ logloss_gap_gamma <- prepare_logloss_gap(logloss_gamma, param_name = "gamma")
 plot_logloss_gap(logloss_gap_gamma, param_name = "gamma") 
 
 
-###################################################################################################
-########   XGBOOST MODEL - CONSERVATIVE HYPERPARAMETERS + EARLY STOPPING - MAX_DELTA_STEP   #######
-###################################################################################################
+##############################################################################################
+########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MAX_DELTA_STEP   #######
+##############################################################################################
 
 
 ### run xgboost model
@@ -1777,12 +1776,9 @@ logloss_gap_max_delta_step <- prepare_logloss_gap(logloss_max_delta_step, param_
 plot_logloss_gap(logloss_gap_max_delta_step, param_name = "max_delta_step") 
 
 
-################################################################################################
-########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS WITH PARALLELIZATON  #######
-################################################################################################
-
-
-############### LOGLOSS MODEL - WITHOUT PARALLELIZATON ###############
+###########################################################################################################
+########   XGBOOST LOGLOSS MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS WITHOUT PARALLELIZATON  #######
+###########################################################################################################
 
 scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                              colsample_bytree, colsample_bynode, gamma,
@@ -1873,7 +1869,9 @@ head(optObj$scoreSummary[order(-Score), ])
 getBestPars(optObj)
 
 
-############### LOGLOSS MODEL - PARALLELIZATON OF CROSS VALIDATION FOLDS ###############
+#################################################################################################################
+########   XGBOOST LOGLOSS MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS  #######
+#################################################################################################################
 
 library(future.apply) # allows parallel versions of *apply functions
 plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
@@ -1980,7 +1978,9 @@ bestparams_para.cv = getBestPars(optObj)
 plan(sequential) # resets future plan to normal single-threaded execution
 
 
-############### LOGLOSS MODEL - PARALLELIZATON OF BAYESIAN OPTIMIZATION ###############
+##################################################################################################################
+########   XGBOOST LOGLOSS MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT  #######
+##################################################################################################################
 
 scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                              colsample_bytree, colsample_bynode, gamma,
@@ -2080,7 +2080,9 @@ head(optObj$scoreSummary[order(-Score), ])
 bestparams_para.bay = getBestPars(optObj)
 
 
-############### EVALUATION OF MODEL (LOGLOSS) WITH BEST HYPERPARAMETERS ###############
+#########################################################################################
+########   XGBOOST LOGLOSS MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS  #######
+#########################################################################################
 
 ### function to evaluate model using hyperparameter values determined using Bayesian optimization
 final_xgb_evaluation <- function(best_params,
@@ -2408,7 +2410,9 @@ plot_logloss_gap_final <- function(logloss_gap_df) {
 plot_logloss_gap_final(logloss_gap_final)
 
 
-############### AUC MODEL - PARALLELIZATON OF CROSS VALIDATION FOLDS ###############
+#############################################################################################################
+########   XGBOOST AUC MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS  #######
+#############################################################################################################
 
 library(future.apply) # allows parallel versions of *apply functions
 plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
@@ -2515,8 +2519,9 @@ bestparams_para.cv_auc = getBestPars(optObj)
 plan(sequential) # resets future plan to normal single-threaded execution
 
 
-############### EVALUATION OF MODEL (AUC) WITH BEST HYPERPARAMETERS ###############
-
+#####################################################################################
+########   XGBOOST AUC MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS  #######
+#####################################################################################
 
 # list of best hyperparameters to use (from 10 repeats of 5-fold cross-validation parallelized on the cv folds)
 best_params <- list(objective = "binary:logistic",
@@ -2604,30 +2609,286 @@ logloss_gap_final_auc <- prepare_logloss_gap_final(logloss_final_auc)
 plot_logloss_gap_final(logloss_gap_final_auc)
 
 
+#######################################################################################
+########   XGBOOST LOGLOSS MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  #######
+#######################################################################################
+
+# best hyperparameter values determined by Bayesian optimization
+best_params <- list(objective = "binary:logistic",
+                    eval_metric = "logloss",
+                    eta = bestparams_para.cv$eta,
+                    scale_pos_weight = bestparams_para.cv$scale_pos_weight,
+                    max_depth = bestparams_para.cv$max_depth,
+                    min_child_weight = bestparams_para.cv$min_child_weight,
+                    subsample = bestparams_para.cv$subsample,
+                    colsample_bytree = bestparams_para.cv$colsample_bytree,
+                    colsample_bynode = bestparams_para.cv$colsample_bynode,
+                    lambda = bestparams_para.cv$lambda,
+                    alpha = bestparams_para.cv$alpha,
+                    gamma = bestparams_para.cv$alpha,
+                    max_delta_step = bestparams_para.cv$max_delta_step)
+
+# optimum number of nrounds chosen during final evaluation
+best_nrounds <- round(mean(unlist(final_results$final_evaluation$best_nrounds)))
+
+# train the model on the full dataset
+dtrain_full <- xgboost::xgb.DMatrix(data = as.matrix(metagen[, all_feat_cols]),
+                                    label = metagen$condition_numeric)
+
+final_model <- xgboost::xgb.train(params = best_params,
+                                  data = dtrain_full,
+                                  nrounds = best_nrounds,
+                                  verbose = 1)
 
 
+##########################################################################################
+########   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  #######
+##########################################################################################
+
+# compute tree SHAP values
+shap_values <- predict(final_model,
+                       newdata = dtrain_full,
+                       predcontrib = TRUE)
+
+dim(shap_values) # one row per sample, one column per feature + bias term (initial logit)
+shap_summary <- as.data.frame(shap_values)
+shap_summary$BIAS <- NULL  # remove bias term
+
+# mean absolute SHAP value per feature
+shap_mean_abs <- sort(colMeans(abs(shap_summary)), decreasing = TRUE)
+shap_mean_abs[1:20]
+
+shap_mean_abs <- as.data.frame(shap_mean_abs) # covert to data.frame
+shap_mean_abs$feature <- rownames(shap_mean_abs)
 
 
+# SHAP plots with SHAPforxgboost
+library(SHAPforxgboost)
+shap_long <- shap.prep(xgb_model = final_model, X_train = as.matrix(metagen[, all_feat_cols]))
+shap.plot.summary(shap_long)
+
+# shap.plot.summary with top features (SHAP value > 0.005)
+top_shap <- shap_mean_abs %>%
+  group_by(feature) %>%
+  filter(shap_mean_abs > 0.005)
+
+shap_long_filtered <- shap_long %>%
+  filter(variable %in% top_shap$feature) %>%
+  mutate(variable = factor(variable, levels = unique(variable)))
+
+shap.plot.summary(shap_long_filtered)
 
 
+### SHAP dependence plots
+# how SHAP values for a given feature vary as the input values for the feature vary (CLR transformed relative abundance)
+
+# plot dependence plot for feature of interest
+shap.plot.dependence(data_long = shap_long, x = "Lachnoclostridium_sp._YL32", y = NULL)
 
 
+# filter for the feature of interest
+feature_name <- "Lachnoclostridium_sp._YL32"
+shap_dep <- shap_long %>%
+  filter(variable == feature_name)
+
+# plot dependence plot 
+ggplot(shap_dep, aes(x = rfvalue, y = value)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  labs(title = paste("SHAP dependence plot for", feature_name),
+       x = "Feature value (CLR-transformed relative abundances)",
+       y = "SHAP value") +
+  theme_minimal()
 
 
+### SHAP interaction values
+# how pairs of features interact in affecting the prediction
+
+# compute SHAP interaction values (3D array)
+interaction_values <- predict(final_model,
+                              newdata = as.matrix(metagen[, all_feat_cols]),
+                              predinteraction = TRUE)
 
 
+### top feature pairs based on interaction strength (pairwise)
+# aggregate across samples (interaction matrix)
+mean_interactions <- apply(abs(interaction_values), c(2, 3), mean)
+
+feature_names <- colnames(mean_interactions) # get feature names
+
+# convert to long format
+interaction_df <- as.data.frame(mean_interactions)
+interaction_df$Feature1 <- feature_names
+interaction_long <- pivot_longer(interaction_df, 
+                                 cols = -Feature1, 
+                                 names_to = "Feature2", 
+                                 values_to = "InteractionStrength")
+
+# remove self-interactions (diagonal)
+interaction_long <- interaction_long %>%
+  filter(Feature1 != Feature2)
+
+# remove duplicate symmetric pairs
+interaction_long <- interaction_long %>%
+  rowwise() %>%
+  mutate(pair = paste(sort(c(Feature1, Feature2)), collapse = "_")) %>%
+  distinct(pair, .keep_all = TRUE) %>%
+  ungroup()
+
+# top interactions
+top_interactions <- interaction_long %>%
+  arrange(desc(InteractionStrength)) %>%
+  head(20)
+top_interactions
+
+# plot top interactions (heatmap)
+ggplot(top_interactions, aes(x = Feature1, y = Feature2, fill = InteractionStrength)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Top SHAP feature interactions", x = "Feature 1", y = "Feature 2")
 
 
+### show strongest-interacting features (feature-wise sum)
+# compute sum of interactions for each feature, excluding self-interactions (diagonals)
+interaction_strength_per_feature <- rowSums(mean_interactions) - diag(mean_interactions)
+
+# rank features by interaction strength
+top_features <- sort(interaction_strength_per_feature, decreasing = TRUE)[1:20]
+top_feature_names <- names(top_features)
+top_interaction_matrix <- mean_interactions[top_feature_names, top_feature_names] # subset matrix
+
+# plot strongest interactions (heatmap)
+heatmap(top_interaction_matrix,
+        main = "SHAP interaction heatmap (Top features only)",
+        col = viridis::viridis(100), 
+        margins = c(8, 8))
 
 
+### dependence plots for top interacting pairs
+shap_f1 <- shap_long %>% filter(variable == "Acutalibacter_muris") # get SHAP values for Acutalibacter_muris
+shap_f1$interactor_value <- metagen[["Enterocloster_clostridioformis"]] # add abundance values for Enterocloster_clostridioformis
+
+# plot SHAP values versus abundance for Acutalibacter_muris and color by abundance of Enterocloster_clostridioformis
+ggplot(shap_f1, aes(x = value, y = rfvalue, color = interactor_value)) +
+  geom_point(alpha = 0.6) +
+  scale_color_viridis_c(name = "Enterocloster_clostridioformis") +
+  labs(title = paste("SHAP dependence plot:", "Acutalibacter_muris", "vs", "Enterocloster_clostridioformis"),
+       x = paste("Acutalibacter_muris", "(abundance)"),
+       y = paste("SHAP value for", "Acutalibacter_muris")) +
+  theme_minimal()
 
 
+# loop through top 20 interactions
+for (i in 1:nrow(top_interactions)) {
+  f1 <- top_interactions$Feature1[i]
+  f2 <- top_interactions$Feature2[i]
+  
+  # get SHAP values for f1
+  shap_f1 <- shap_long %>% filter(variable == f1)
+  
+  # add the interacting feature's abundance from the metagen dataset
+  shap_f1$interactor_value <- metagen[[f2]]
+  
+  # plot one feature's SHAP values versus its abundance and colored by the interacting feature's abundance
+  p <- ggplot(shap_f1, aes(x = value, y = rfvalue, color = interactor_value)) +
+    geom_point(alpha = 0.6) +
+    scale_color_viridis_c(name = f2) +
+    labs(title = paste("SHAP dependence plot:", f1, "vs", f2),
+         x = paste(f1, "(abundance)"),
+         y = paste("SHAP value for", f1)) +
+    theme_minimal()
+  
+  print(p)
+}
 
 
+### partial dependence plots (PDP)
+# shows the average effect of the feature on predicted outcome
+library(pdp)
+
+# prepare data matrix without label
+X <- as.matrix(metagen[, all_feat_cols])
+
+# partial dependence for Lachnoclostridium_sp._YL32
+pdp_lachno <- partial(object = final_model,
+                      pred.var = "Lachnoclostridium_sp._YL32",
+                      train = metagen[, all_feat_cols],
+                      grid.resolution = 20, # number of grid points across the feature's range
+                      type = "regression", # output of the model is probabilities
+                      prob = TRUE, # return probabilities (not logits)
+                      plot = FALSE)
+
+ggplot(pdp_lachno, aes(x = Lachnoclostridium_sp._YL32, y = yhat)) +
+  geom_line(color = "blue") + theme_minimal() +
+  labs(title = "Partial dependence plot",
+       x = "Lachnoclostridium_sp._YL32 (Abundance)", y = "Predicted probability of disease")
 
 
+# partial dependence for Petrimonas_mucosa
+pdp_petrim <- partial(object = final_model,
+                      pred.var = "Petrimonas_mucosa",
+                      train = metagen[, all_feat_cols],
+                      grid.resolution = 20, # number of grid points across the feature's range
+                      type = "regression", # output of the model is probabilities
+                      prob = TRUE, # return probabilities (not logits)
+                      plot = FALSE)
+
+ggplot(pdp_petrim, aes(x = Petrimonas_mucosa, y = yhat)) +
+  geom_line(color = "blue") + theme_minimal() +
+  labs(title = "Partial dependence plot",
+       x = "Petrimonas_mucosa (Abundance)", y = "Predicted probability of disease")
 
 
-
-
+sessionInfo()
+# R version 4.5.0 (2025-04-11)
+# Platform: aarch64-apple-darwin20
+# Running under: macOS Sequoia 15.5
+# 
+# Matrix products: default
+# BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+# LAPACK: /Library/Frameworks/R.framework/Versions/4.5-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.12.1
+# 
+# locale:
+#   [1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+# 
+# time zone: America/Edmonton
+# tzcode source: internal
+# 
+# attached base packages:
+#   [1] parallel  stats     graphics  grDevices utils     datasets  methods   base     
+# 
+# other attached packages:
+#   [1] pdp_0.8.2                     SHAPforxgboost_0.1.3          DiceKriging_1.6.0            
+# [4] future.apply_1.20.0           future_1.58.0                 doParallel_1.0.17            
+# [7] iterators_1.0.14              foreach_1.5.2                 ParBayesianOptimization_1.2.6
+# [10] Matrix_1.7-3                  MLmetrics_1.1.3               pROC_1.18.5                  
+# [13] caret_7.0-1                   lattice_0.22-7                xgboost_1.7.11.1             
+# [16] compositions_2.0-8            lubridate_1.9.4               forcats_1.0.0                
+# [19] stringr_1.5.1                 dplyr_1.1.4                   purrr_1.0.4                  
+# [22] readr_2.1.5                   tidyr_1.3.1                   tibble_3.3.0                 
+# [25] tidyverse_2.0.0               ggplot2_3.5.2                
+# 
+# loaded via a namespace (and not attached):
+#   [1] gridExtra_2.3        rlang_1.1.6          magrittr_2.0.3       e1071_1.7-16        
+# [5] compiler_4.5.0       mgcv_1.9-3           vctrs_0.6.5          reshape2_1.4.4      
+# [9] lhs_1.2.0            pkgconfig_2.0.3      crayon_1.5.3         backports_1.5.0     
+# [13] labeling_0.4.3       utf8_1.2.6           prodlim_2025.04.28   tzdb_0.5.0          
+# [17] jsonlite_2.0.0       recipes_1.3.1        tweenr_2.0.3         broom_1.0.8         
+# [21] R6_2.6.1             stringi_1.8.7        RColorBrewer_1.1-3   parallelly_1.45.0   
+# [25] car_3.1-3            rpart_4.1.24         Rcpp_1.0.14          splines_4.5.0       
+# [29] nnet_7.3-20          timechange_0.3.0     tidyselect_1.2.1     viridis_0.6.5       
+# [33] rstudioapi_0.17.1    dichromat_2.0-0.1    abind_1.4-8          timeDate_4041.110   
+# [37] codetools_0.2-20     listenv_0.9.1        plyr_1.8.9           withr_3.0.2         
+# [41] survival_3.8-3       bayesm_3.1-6         proxy_0.4-27         polyclip_1.10-7     
+# [45] pillar_1.10.2        ggpubr_0.6.0         carData_3.0-5        tensorA_0.36.2.1    
+# [49] checkmate_2.3.2      stats4_4.5.0         generics_0.1.4       dbscan_1.2.2        
+# [53] hms_1.1.3            scales_1.4.0         globals_0.18.0       class_7.3-23        
+# [57] glue_1.8.0           tools_4.5.0          robustbase_0.99-4-1  data.table_1.17.4   
+# [61] ModelMetrics_1.2.2.2 gower_1.0.2          ggsignif_0.6.4       grid_4.5.0          
+# [65] ipred_0.9-15         nlme_3.1-168         BBmisc_1.13          ggforce_0.4.2       
+# [69] Formula_1.2-5        cli_3.6.5            viridisLite_0.4.2    lava_1.8.1          
+# [73] gtable_0.3.6         DEoptimR_1.1-3-1     rstatix_0.7.2        digest_0.6.37       
+# [77] farver_2.1.2         lifecycle_1.0.4      hardhat_1.4.1        MASS_7.3-65
 
