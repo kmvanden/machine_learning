@@ -1804,7 +1804,7 @@ scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                  scale_pos_weight = scale_pos_weight,
                  max_delta_step = as.integer(max_delta_step))
   
-  repeats <- 5
+  repeats <- 10
   repeat_logloss <- numeric(repeats)
   
   # loop over each repeat
@@ -1869,9 +1869,9 @@ head(optObj$scoreSummary[order(-Score), ])
 getBestPars(optObj)
 
 
-#################################################################################################################
-########   XGBOOST LOGLOSS MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS  #######
-#################################################################################################################
+###################################################################################################################
+########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS - LOGLOSS  #######
+###################################################################################################################
 
 library(future.apply) # allows parallel versions of *apply functions
 plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
@@ -1907,37 +1907,37 @@ scoring_function <- function(eta, max_depth, min_child_weight, subsample,
   # output collected by repeat_logloss
   # data and feat_cols explicitly passed to each worker
   repeat_logloss <- future_sapply(1:repeats,
-    function(r, data_local, feat_cols_local) {
-      
-      # gives each repeat a different random seed for fold generation (prevents identical scores and zero variance for Bayesian optimizaiton)
-      set.seed(sample.int(1e6, 1))
-      
-      # create 5-folds for cross-validation
-      folds <- caret::createFolds(data_local$condition, k = 5, list = TRUE, returnTrain = FALSE)
-      
-      # ensures that any xgboost error returns NULL instead of crashing
-      xgb_cv <- tryCatch({
-        xgboost::xgb.cv(params = params,
-                        data = xgb.DMatrix(data = as.matrix(data_local[, feat_cols_local]), 
-                                           label = data_local$condition_numeric),
-                        nrounds = 5000,
-                        folds = folds,
-                        stratified = TRUE,
-                        showsd = FALSE,
-                        early_stopping_rounds = 50,
-                        verbose = 0)
-      }, error = function(e) NULL)
-      
-      # replaces failures with a finite large number (prevents NA/Inf issues that will crash BayesOpt)
-      if (is.null(xgb_cv)) return(1e6)
-      
-      # returns the best iteration of logloss for the repeat
-      xgb_cv$evaluation_log$test_logloss_mean[xgb_cv$best_iteration]
-    },
-    
-    future.seed = TRUE, # ensures random number generation is reproducible across parallel workers
-    data_local = data,
-    feat_cols_local = feat_cols) # pass dataset and feature columns from parent environment to each worker
+                                  function(r, data_local, feat_cols_local) {
+                                    
+                                    # gives each repeat a different random seed for fold generation (prevents identical scores and zero variance for Bayesian optimizaiton)
+                                    set.seed(sample.int(1e6, 1))
+                                    
+                                    # create 5-folds for cross-validation
+                                    folds <- caret::createFolds(data_local$condition, k = 5, list = TRUE, returnTrain = FALSE)
+                                    
+                                    # ensures that any xgboost error returns NULL instead of crashing
+                                    xgb_cv <- tryCatch({
+                                      xgboost::xgb.cv(params = params,
+                                                      data = xgb.DMatrix(data = as.matrix(data_local[, feat_cols_local]), 
+                                                                         label = data_local$condition_numeric),
+                                                      nrounds = 5000,
+                                                      folds = folds,
+                                                      stratified = TRUE,
+                                                      showsd = FALSE,
+                                                      early_stopping_rounds = 50,
+                                                      verbose = 0)
+                                      }, error = function(e) NULL)
+                                    
+                                    # replaces failures with a finite large number (prevents NA/Inf issues that will crash BayesOpt)
+                                    if (is.null(xgb_cv)) return(Inf)
+                                    
+                                    # returns the best iteration of logloss for the repeat
+                                    xgb_cv$evaluation_log$test_logloss_mean[xgb_cv$best_iteration]
+                                    },
+                                  
+                                  future.seed = TRUE, # ensures random number generation is reproducible across parallel workers
+                                  data_local = data,
+                                  feat_cols_local = feat_cols) # pass dataset and feature columns from parent environment to each worker
   
   # average across repeats
   mean_logloss <- mean(repeat_logloss)
@@ -1970,17 +1970,126 @@ optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, fea
                    verbose = 1)
 
 # view results
-stopstatus_para.cv = optObj$stopStatus
-scoresum_para.cv = optObj$scoreSummary[order(-Score), ]
-head(scoresum_para.cv)
-bestparams_para.cv = getBestPars(optObj)
+stopstatus_cv_log = optObj$stopStatus
+scoresum_cv_log = optObj$scoreSummary[order(-Score), ]
+head(scoresum_cv_log)
+bestparams_cv_log = getBestPars(optObj)
 
 plan(sequential) # resets future plan to normal single-threaded execution
 
 
-##################################################################################################################
-########   XGBOOST LOGLOSS MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT  #######
-##################################################################################################################
+###############################################################################################################
+########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS - AUC  #######
+###############################################################################################################
+
+library(future.apply) # allows parallel versions of *apply functions
+plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
+
+# data and feat_cols explicitly passed so each worker has a complete copy of data (avoid scope issue in parallel execution)
+scoring_function <- function(eta, max_depth, min_child_weight, subsample,
+                             colsample_bytree, colsample_bynode, gamma,
+                             lambda, alpha, scale_pos_weight, max_delta_step,
+                             data, feat_cols) {
+  
+  # convert to DMatrix
+  dtrain <- xgb.DMatrix(data = as.matrix(data[, feat_cols]), 
+                        label = data$condition_numeric)
+  
+  params <- list(objective = "binary:logistic",
+                 eval_metric = "auc",
+                 eta = eta,
+                 max_depth = as.integer(max_depth), # integer
+                 min_child_weight = as.integer(min_child_weight), # integer
+                 subsample = subsample,
+                 colsample_bytree = colsample_bytree,
+                 colsample_bynode = colsample_bynode,
+                 gamma = gamma,
+                 lambda = lambda,
+                 alpha = alpha,
+                 scale_pos_weight = scale_pos_weight,
+                 max_delta_step = as.integer(max_delta_step)) # integer
+  
+  # number of repeats of stratified 5-fold cross-validation
+  repeats <- 10 
+  
+  # runs the anonymous function in parallel once per repeat, parallelized across the workers
+  # output collected by repeat_logloss
+  # data and feat_cols explicitly passed to each worker
+  repeat_auc <- future_sapply(1:repeats,
+                              function(r, data_local, feat_cols_local) {
+                                
+                                # gives each repeat a different random seed for fold generation (prevents identical scores and zero variance for Bayesian optimizaiton)
+                                set.seed(sample.int(1e6, 1))
+                                
+                                # create 5-folds for cross-validation
+                                folds <- caret::createFolds(data_local$condition, k = 5, list = TRUE, returnTrain = FALSE)
+                                
+                                # ensures that any xgboost error returns NULL instead of crashing
+                                xgb_cv <- tryCatch({
+                                  xgboost::xgb.cv(params = params,
+                                                  data = xgb.DMatrix(data = as.matrix(data_local[, feat_cols_local]), 
+                                                                     label = data_local$condition_numeric),
+                                                  nrounds = 5000,
+                                                  folds = folds,
+                                                  stratified = TRUE,
+                                                  showsd = FALSE,
+                                                  early_stopping_rounds = 50,
+                                                  verbose = 0)
+                                }, error = function(e) NULL)
+                                
+                                # replaces failures with a finite large number (prevents NA/Inf issues that will crash BayesOpt)
+                                if (is.null(xgb_cv)) return(0)
+                                
+                                # returns the best iteration of auc for the repeat
+                                xgb_cv$evaluation_log$test_auc_mean[xgb_cv$best_iteration]
+                              },
+                              
+                              future.seed = TRUE, # ensures random number generation is reproducible across parallel workers
+                              data_local = data,
+                              feat_cols_local = feat_cols) # pass dataset and feature columns from parent environment to each worker
+  
+  # average across repeats
+  mean_auc <- mean(repeat_auc)
+  
+  # return mean auc values
+  return(list(Score = mean_auc))
+}
+
+# define parameter bounds
+bounds <- list(eta = c(0.001, 0.02),
+               max_depth = c(2L, 6L), # integer
+               min_child_weight = c(1L, 2L), # integer
+               subsample = c(0.9, 1.0),
+               colsample_bytree = c(0.6, 1.0),
+               colsample_bynode = c(0.6, 1.0),
+               gamma = c(0, 4),
+               lambda = c(0, 10),
+               alpha = c(0, 4),
+               scale_pos_weight = c(0.3, 2.0),
+               max_delta_step = c(0L, 10L)) # integer
+
+# run Bayesian optimization sequentially, letting repeats run in parallel
+set.seed(1234) # reproducible search of initial points
+optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, feat_cols = all_feat_cols), # wrapper to pass dataset and feature columns to scoring_fucntion
+                   bounds = bounds,
+                   initPoints = 12,
+                   iters.n = 10,
+                   acq = "ei",
+                   parallel = FALSE,
+                   verbose = 1)
+
+# view results
+stopstatus_cv_auc = optObj$stopStatus
+scoresum_cv_auc = optObj$scoreSummary[order(-Score), ]
+head(scoresum_cv_auc)
+bestparams_cv_auc = getBestPars(optObj)
+
+plan(sequential) # resets future plan to normal single-threaded execution
+
+
+####################################################################################################################
+########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT - LOGLOSS  #######
+####################################################################################################################
 
 scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                              colsample_bytree, colsample_bynode, gamma,
@@ -2006,7 +2115,7 @@ scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                  scale_pos_weight = scale_pos_weight,
                  max_delta_step = as.integer(max_delta_step))
   
-  repeats <- 5
+  repeats <- 10
   repeat_logloss <- numeric(repeats)
   
   # loop over each repeat
@@ -2074,23 +2183,125 @@ optObj <- bayesOpt(FUN = scoring_function,
 registerDoSEQ() 
 
 # view results
-stopstatus_para.bay = optObj$stopStatus
-scoresum_para.bay = optObj$scoreSummary[order(-Score), ]
+stopstatus_bo_log = optObj$stopStatus
+scoresum_bo_log = optObj$scoreSummary[order(-Score), ]
 head(optObj$scoreSummary[order(-Score), ])
-bestparams_para.bay = getBestPars(optObj)
+bestparams_bo_log = getBestPars(optObj)
 
 
-#########################################################################################
-########   XGBOOST LOGLOSS MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS  #######
-#########################################################################################
+################################################################################################################
+########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT - AUC  #######
+################################################################################################################
 
-### function to evaluate model using hyperparameter values determined using Bayesian optimization
+scoring_function <- function(eta, max_depth, min_child_weight, subsample,
+                             colsample_bytree, colsample_bynode, gamma,
+                             lambda, alpha, scale_pos_weight, max_delta_step) {
+  
+  set.seed(1234)
+  
+  # convert to DMatrix
+  dtrain <- xgb.DMatrix(data = as.matrix(metagen[, all_feat_cols]), 
+                        label = metagen$condition_numeric)
+  
+  params <- list(objective = "binary:logistic",
+                 eval_metric = "auc",
+                 eta = eta,
+                 max_depth = as.integer(max_depth),
+                 min_child_weight = as.integer(min_child_weight),
+                 subsample = subsample,
+                 colsample_bytree = colsample_bytree,
+                 colsample_bynode = colsample_bynode,
+                 gamma = gamma,
+                 lambda = lambda,
+                 alpha = alpha,
+                 scale_pos_weight = scale_pos_weight,
+                 max_delta_step = as.integer(max_delta_step))
+  
+  repeats <- 10
+  repeat_auc <- numeric(repeats)
+  
+  # loop over each repeat
+  for (r in 1:repeats) {
+    
+    #  create 5-folds for cross-validation (stratified on condition)
+    folds <- caret::createFolds(metagen$condition, k = 5, list = TRUE, returnTrain = FALSE)
+    
+    xgb_cv <- tryCatch({
+      xgboost::xgb.cv(
+        params = params,
+        data = dtrain,
+        nrounds = 5000,
+        folds = folds,
+        stratified = TRUE,
+        showsd = FALSE,
+        early_stopping_rounds = 50,
+        verbose = 0)
+    }, error = function(e) return(NULL))
+    
+    if (is.null(xgb_cv)) {
+      repeat_auc[r] <- 0
+    } else {
+      
+      # take the best iteration of auc for the repeat
+      repeat_auc[r] <- xgb_cv$evaluation_log$test_auc_mean[xgb_cv$best_iteration]
+    }
+  }
+  
+  # average across repeats
+  mean_auc <- mean(repeat_auc)
+  
+  # return mean auc values
+  return(list(Score = mean_auc))
+}
+
+# define parameter bounds
+bounds <- list(eta = c(0.001, 0.02),
+               max_depth = c(2L, 6L),
+               min_child_weight = c(1L, 2L),
+               subsample = c(0.9, 1.0),
+               colsample_bytree = c(0.6, 1.0),
+               colsample_bynode = c(0.6, 1.0),
+               gamma = c(0, 4),
+               lambda = c(0, 10),
+               alpha = c(0, 4),
+               scale_pos_weight = c(0.3, 2.0),
+               max_delta_step = c(0L, 10L))
+
+# resister back end
+# parallelize evaluations of the scoring function
+# each hyperparameter point being evaluated by Bayesain optimization can run on a separate core
+doParallel::registerDoParallel(parallel::detectCores() - 1)
+
+set.seed(1234)
+optObj <- bayesOpt(FUN = scoring_function,
+                   bounds = bounds,
+                   initPoints = 12,
+                   iters.n = 10,
+                   acq = "ei",
+                   parallel = TRUE,
+                   verbose = 1)
+
+# unregister the backend
+registerDoSEQ() 
+
+# view results
+stopstatus_bo_auc = optObj$stopStatus
+scoresum_bo_auc = optObj$scoreSummary[order(-Score), ]
+head(optObj$scoreSummary[order(-Score), ])
+bestparams_bo_auc = getBestPars(optObj)
+
+
+############################################################################################################
+########   XGBOOST MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS USING LOGLOSS - BO LOGLOSS  #######
+############################################################################################################
+
+### function to evaluate model using hyperparameter values
 final_xgb_evaluation <- function(best_params,
                                  metagen,
                                  all_feat_cols,
                                  target_var,
                                  target_var_numeric,
-                                 n_repeats = 10,
+                                 n_repeats = 50,
                                  n_folds = 5) {
   
   # set seed for reproducibility
@@ -2240,20 +2451,20 @@ final_xgb_evaluation <- function(best_params,
   return(all_results)
 }
 
-# list of best hyperparameters to use (from 10 repeats of 5-fold cross-validation parallelized on the cv folds)
+# list of best hyperparameters to use (from 50 repeats of 5-fold cross-validation parallelized on the cv folds)
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = bestparams_para.cv$eta,
-                    scale_pos_weight = bestparams_para.cv$scale_pos_weight,
-                    max_depth = bestparams_para.cv$max_depth,
-                    min_child_weight = bestparams_para.cv$min_child_weight,
-                    subsample = bestparams_para.cv$subsample,
-                    colsample_bytree = bestparams_para.cv$colsample_bytree,
-                    colsample_bynode = bestparams_para.cv$colsample_bynode,
-                    lambda = bestparams_para.cv$lambda,
-                    alpha = bestparams_para.cv$alpha,
-                    gamma = bestparams_para.cv$alpha,
-                    max_delta_step = bestparams_para.cv$max_delta_step)
+                    eta = bestparams_bo_log$eta,
+                    scale_pos_weight = bestparams_bo_log$scale_pos_weight,
+                    max_depth = bestparams_bo_log$max_depth,
+                    min_child_weight = bestparams_bo_log$min_child_weight,
+                    subsample = bestparams_bo_log$subsample,
+                    colsample_bytree = bestparams_bo_log$colsample_bytree,
+                    colsample_bynode = bestparams_bo_log$colsample_bynode,
+                    lambda = bestparams_bo_log$lambda,
+                    alpha = bestparams_bo_log$alpha,
+                    gamma = bestparams_bo_log$alpha,
+                    max_delta_step = bestparams_bo_log$max_delta_step)
 
 # metagen = data.frame of all features and labels (samples = rows, features + labels = columns)
 metagen <- metagen
@@ -2274,7 +2485,7 @@ final_results <- final_xgb_evaluation(best_params = best_params,
                                       all_feat_cols = all_feat_cols,
                                       target_var = "condition",
                                       target_var_numeric = "condition_numeric",
-                                      n_repeats = 10,
+                                      n_repeats = 50,
                                       n_folds = 5)
 
 ### functions to analyze the output of final_xgb_evaluation
@@ -2311,12 +2522,12 @@ plot_feature_stability_final(feature_freq_final, x = "freq_selected", y = "mean_
 
 # number of features selected in more than threshold_frac folds
 # uses all_importances_df
-get_feature_stability_table_final <- function(all_importances_df, threshold_frac = 0.4, n_repeats = 10) {
+get_feature_stability_table_final <- function(all_importances_df, threshold_frac = 0.4, n_repeats = 50) {
   threshold <- threshold_frac * n_repeats * 5 # 5 folds per repeat
   all_importances_df %>%
     summarise(n_features_selected = sum(freq_selected >= threshold), .groups = "drop")
 }
-get_feature_stability_table_final(feature_freq_final, threshold_frac = 0.4, n_repeats = 10)
+get_feature_stability_table_final(feature_freq_final, threshold_frac = 0.4, n_repeats = 50)
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
@@ -2410,133 +2621,24 @@ plot_logloss_gap_final <- function(logloss_gap_df) {
 plot_logloss_gap_final(logloss_gap_final)
 
 
-#############################################################################################################
-########   XGBOOST AUC MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS  #######
-#############################################################################################################
+########################################################################################################
+########   XGBOOST MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS USING LOGLOSS - BO AUC  #######
+########################################################################################################
 
-library(future.apply) # allows parallel versions of *apply functions
-plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
-
-# data and feat_cols explicitly passed so each worker has a complete copy of data (avoid scope issue in parallel execution)
-scoring_function <- function(eta, max_depth, min_child_weight, subsample,
-                             colsample_bytree, colsample_bynode, gamma,
-                             lambda, alpha, scale_pos_weight, max_delta_step,
-                             data, feat_cols) {
-  
-  # convert to DMatrix
-  dtrain <- xgb.DMatrix(data = as.matrix(data[, feat_cols]), 
-                        label = data$condition_numeric)
-  
-  params <- list(objective = "binary:logistic",
-                 eval_metric = "auc",
-                 eta = eta,
-                 max_depth = as.integer(max_depth), # integer
-                 min_child_weight = as.integer(min_child_weight), # integer
-                 subsample = subsample,
-                 colsample_bytree = colsample_bytree,
-                 colsample_bynode = colsample_bynode,
-                 gamma = gamma,
-                 lambda = lambda,
-                 alpha = alpha,
-                 scale_pos_weight = scale_pos_weight,
-                 max_delta_step = as.integer(max_delta_step)) # integer
-  
-  # number of repeats of stratified 5-fold cross-validation
-  repeats <- 10 
-  
-  # runs the anonymous function in parallel once per repeat, parallelized across the workers
-  # output collected by repeat_logloss
-  # data and feat_cols explicitly passed to each worker
-  repeat_auc <- future_sapply(1:repeats,
-                              function(r, data_local, feat_cols_local) {
-                                    
-                               # gives each repeat a different random seed for fold generation (prevents identical scores and zero variance for Bayesian optimizaiton)
-                               set.seed(sample.int(1e6, 1))
-                                    
-                                # create 5-folds for cross-validation
-                                folds <- caret::createFolds(data_local$condition, k = 5, list = TRUE, returnTrain = FALSE)
-                                    
-                                # ensures that any xgboost error returns NULL instead of crashing
-                                xgb_cv <- tryCatch({
-                                xgboost::xgb.cv(params = params,
-                                                data = xgb.DMatrix(data = as.matrix(data_local[, feat_cols_local]), 
-                                                                   label = data_local$condition_numeric),
-                                                nrounds = 5000,
-                                                folds = folds,
-                                                stratified = TRUE,
-                                                showsd = FALSE,
-                                                early_stopping_rounds = 50,
-                                                verbose = 0)
-                                  }, error = function(e) NULL)
-                                    
-                                  # replaces failures with a finite large number (prevents NA/Inf issues that will crash BayesOpt)
-                                  if (is.null(xgb_cv)) return(1e6)
-                                    
-                                  # returns the best iteration of auc for the repeat
-                                  xgb_cv$evaluation_log$test_auc_mean[xgb_cv$best_iteration]
-                                  },
-                              
-                              future.seed = TRUE, # ensures random number generation is reproducible across parallel workers
-                              data_local = data,
-                              feat_cols_local = feat_cols) # pass dataset and feature columns from parent environment to each worker
-  
-  # average across repeats
-  mean_auc <- mean(repeat_auc)
-  
-  # return mean auc values
-  return(list(Score = mean_auc))
-}
-
-# define parameter bounds
-bounds <- list(eta = c(0.001, 0.02),
-               max_depth = c(2L, 6L), # integer
-               min_child_weight = c(1L, 2L), # integer
-               subsample = c(0.9, 1.0),
-               colsample_bytree = c(0.6, 1.0),
-               colsample_bynode = c(0.6, 1.0),
-               gamma = c(0, 4),
-               lambda = c(0, 10),
-               alpha = c(0, 4),
-               scale_pos_weight = c(0.3, 2.0),
-               max_delta_step = c(0L, 10L)) # integer
-
-# run Bayesian optimization sequentially, letting repeats run in parallel
-set.seed(1234) # reproducible search of initial points
-optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, feat_cols = all_feat_cols), # wrapper to pass dataset and feature columns to scoring_fucntion
-                   bounds = bounds,
-                   initPoints = 12,
-                   iters.n = 10,
-                   acq = "ei",
-                   parallel = FALSE,
-                   verbose = 1)
-
-# view results
-stopstatus_para.cv_auc = optObj$stopStatus
-scoresum_para.cv_auc = optObj$scoreSummary[order(-Score), ]
-head(scoresum_para.cv_auc)
-bestparams_para.cv_auc = getBestPars(optObj)
-
-plan(sequential) # resets future plan to normal single-threaded execution
-
-
-#####################################################################################
-########   XGBOOST AUC MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS  #######
-#####################################################################################
-
-# list of best hyperparameters to use (from 10 repeats of 5-fold cross-validation parallelized on the cv folds)
+# list of best hyperparameters 
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = bestparams_para.cv_auc$eta,
-                    scale_pos_weight = bestparams_para.cv_auc$scale_pos_weight,
-                    max_depth = bestparams_para.cv_auc$max_depth,
-                    min_child_weight = bestparams_para.cv_auc$min_child_weight,
-                    subsample = bestparams_para.cv_auc$subsample,
-                    colsample_bytree = bestparams_para.cv_auc$colsample_bytree,
-                    colsample_bynode = bestparams_para.cv_auc$colsample_bynode,
-                    lambda = bestparams_para.cv_auc$lambda,
-                    alpha = bestparams_para.cv_auc$alpha,
-                    gamma = bestparams_para.cv_auc$alpha,
-                    max_delta_step = bestparams_para.cv_auc$max_delta_step)
+                    eta = bestparams_bo_auc$eta,
+                    scale_pos_weight = bestparams_bo_auc$scale_pos_weight,
+                    max_depth = bestparams_bo_auc$max_depth,
+                    min_child_weight = bestparams_bo_auc$min_child_weight,
+                    subsample = bestparams_bo_auc$subsample,
+                    colsample_bytree = bestparams_bo_auc$colsample_bytree,
+                    colsample_bynode = bestparams_bo_auc$colsample_bynode,
+                    lambda = bestparams_bo_auc$lambda,
+                    alpha = bestparams_bo_auc$alpha,
+                    gamma = bestparams_bo_auc$alpha,
+                    max_delta_step = bestparams_bo_auc$max_delta_step)
 
 # metagen = data.frame of all features and labels (samples = rows, features + labels = columns)
 metagen <- metagen
@@ -2556,7 +2658,7 @@ final_results_auc <- final_xgb_evaluation(best_params = best_params,
                                           all_feat_cols = all_feat_cols,
                                           target_var = "condition",
                                           target_var_numeric = "condition_numeric",
-                                          n_repeats = 10,
+                                          n_repeats = 50,
                                           n_folds = 5)
 
 ### functions to analyze the output of final_xgb_evaluation
@@ -2579,7 +2681,7 @@ plot_feature_stability_final(feature_freq_final_auc, x = "freq_selected", y = "m
 
 # number of features selected in more than threshold_frac folds
 # uses all_importances_df
-get_feature_stability_table_final(feature_freq_final_auc, threshold_frac = 0.4, n_repeats = 10)
+get_feature_stability_table_final(feature_freq_final_auc, threshold_frac = 0.4, n_repeats = 50)
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
@@ -2616,17 +2718,17 @@ plot_logloss_gap_final(logloss_gap_final_auc)
 # best hyperparameter values determined by Bayesian optimization
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = bestparams_para.cv$eta,
-                    scale_pos_weight = bestparams_para.cv$scale_pos_weight,
-                    max_depth = bestparams_para.cv$max_depth,
-                    min_child_weight = bestparams_para.cv$min_child_weight,
-                    subsample = bestparams_para.cv$subsample,
-                    colsample_bytree = bestparams_para.cv$colsample_bytree,
-                    colsample_bynode = bestparams_para.cv$colsample_bynode,
-                    lambda = bestparams_para.cv$lambda,
-                    alpha = bestparams_para.cv$alpha,
-                    gamma = bestparams_para.cv$alpha,
-                    max_delta_step = bestparams_para.cv$max_delta_step)
+                    eta = bestparams_bo_auc$eta,
+                    scale_pos_weight = bestparams_bo_auc$scale_pos_weight,
+                    max_depth = bestparams_bo_auc$max_depth,
+                    min_child_weight = bestparams_bo_auc$min_child_weight,
+                    subsample = bestparams_bo_auc$subsample,
+                    colsample_bytree = bestparams_bo_auc$colsample_bytree,
+                    colsample_bynode = bestparams_bo_auc$colsample_bynode,
+                    lambda = bestparams_bo_auc$lambda,
+                    alpha = bestparams_bo_auc$alpha,
+                    gamma = bestparams_bo_auc$alpha,
+                    max_delta_step = bestparams_bo_auc$max_delta_step)
 
 # optimum number of nrounds chosen during final evaluation
 best_nrounds <- round(mean(unlist(final_results$final_evaluation$best_nrounds)))
@@ -2684,6 +2786,7 @@ shap.plot.summary(shap_long_filtered)
 
 # plot dependence plot for feature of interest
 shap.plot.dependence(data_long = shap_long, x = "Lachnoclostridium_sp._YL32", y = NULL)
+shap.plot.dependence(data_long = shap_long, x = "Petrimonas_mucosa", y = NULL)
 
 
 # filter for the feature of interest
