@@ -258,7 +258,8 @@ The optimizer searches the local hyperparameter space via multiple starting poin
 **Scoring function**: The top ```iters.k``` number of points (those with the highest acquisition values) are selected from the local optimum search and evaluated using the scoring function. The results of the scoring function are then used to update the GP for the next epoch (for a total of ```iters.n``` / ```iters.k``` epochs).
 
 ## :thinking::memo: Key Issues with Microbiome Data When Using Machine Learning Models
-**Compositional data**: microbiome data consists of relative abundances, which introduces spurious correlations between the features due to the constant-sum constraint. 
+### Compositional data
+Microbiome data consists of relative abundances, which introduces spurious correlations between the features due to the constant-sum constraint. 
 
 Logistic regression, random forest and xgboost do not assume that features are independent, but their performance and interpretability can still be impacted by correlated features. Correlated features (both real biological relationships and artifacts of closure) provide redundant information to the model, which can cause the model to overfit small patterns or noise, decreasing generalizability. 
  
@@ -270,7 +271,8 @@ These models tend to randomly assign importance to one or a few features out of 
   - For random forests and xgboost, prioritize permutation importance (mean decrease in accuracy) over mean decrease in Gini (where correlated features compete to be selected at the splits) as a measure of feature importance. SHAP values also allow for more robust feature importance interpretation.
   - For xgboost, using column subsampling (```colsample_bytree``` and ```colsample_bynode```) can reduce overfitting to redundant features by enforcing diversity in feature choice (restricts which features are available for a given tree or node). 
 
-**Sparsity (overdispersion and zero inflation)**: in microbiome data, many taxa are absent in most samples, resulting in sparse (zero-dominated) features. Sparse features provide very little weight to the linear predictor (logistic regression) and very little splitting power (random forests and xgboost). Moreover, sparse features increase the noise to signal ratio and thus the risk of overfitting.
+### Sparsity (overdispersion and zero inflation)
+In microbiome data, many taxa are absent in most samples, resulting in sparse (zero-dominated) features. Sparse features provide very little weight to the linear predictor (logistic regression) and very little splitting power (random forests and xgboost). Moreover, sparse features increase the noise to signal ratio and thus the risk of overfitting.
 
 **Possible solutions**:
   - Filter out rare features (those present in less than 10% of the samples). 
@@ -278,18 +280,20 @@ These models tend to randomly assign importance to one or a few features out of 
 - Limit the maximum logit corrections allowed in xgboost using ```max_delta_step``` and ```eta``` to prevent large updates based on features that are only detected in a small number of samples.
 - Additionally, tune ```min_child_weight``` in xgboost, to avoid splitting on sparse features with insufficient support. 
 
-**High dimensionality**: microbiome data often have many more features than samples. High dimensionality can increase the computational load, degrade feature importance (important features masked by irrelevant features/noise), and increase the risk of overfitting (more likely to model spurious patterns, which decreases generalizability). 
+### High dimensionality 
+Microbiome data often have many more features than samples. High dimensionality can increase the computational load, degrade feature importance (important features masked by irrelevant features/noise), and increase the risk of overfitting (more likely to model spurious patterns, which decreases generalizability). 
 
 For example, in unregularized logistic regression, the model estimates one coefficient per feature, and if the number of features exceeds the number of samples, the optimization problem has no unique minimum. Since there are infinite solutions, logistic regression will find coefficients that fit the training data exactly, resulting in models that capture noise and spurious patterns. 
 
 **Possible solutions**:
   - Filter out rare features (those present in less than 10% of the samples). 
   - Perform feature selection using L1 regularization (logistic regression and xgboost), eliminate features based on feature importance (random forest), and reduce the impact of potentially uninformative features using L2 regularization (logistic regression and xgboost).
-  - For xgboost, decrease the risk of overfitting by using ``early_stopping_rounds``` and lower values for ```max_depth``` to decrease decision tree complexity, ```colsample_bytree``` and ``colsample_bynode``` to diversify feature usage, and ```eta``` to reduce the learning rate.
+  - For xgboost, decrease the risk of overfitting by using ```early_stopping_rounds``` and lower values for ```max_depth``` to decrease decision tree complexity, ```colsample_bytree``` and ``colsample_bynode``` to diversify feature usage, and ```eta``` to reduce the learning rate.
   - For random forests and xgboost, prioritize permutation importance (mean decrease in accuracy) over mean decrease in Gini (where correlated features compete to be selected at the splits) as a measure of feature importance. SHAP values also allow for more robust feature importance interpretation.
   - Track feature selection frequency across folds or trees to identify which features are truly informative (consistently selected) versus noise.
 
-**Small datasets**: many microbiome studies have relatively small sample sizes, which increases the risk of overfitting resulting from the high dimensionality of the dataset (fewer samples in the training set to learn from), reduces statistical power and makes cross-validation less reliable (folds may not be representative) 
+### Small datasets
+Many microbiome studies have relatively small sample sizes, which increases the risk of overfitting resulting from the high dimensionality of the dataset (fewer samples in the training set to learn from), reduces statistical power and makes cross-validation less reliable (folds may not be representative) 
 
 **Possible solutions**:
   - Filter out rare features (those present in less than 10% of the samples). 
@@ -297,20 +301,23 @@ For example, in unregularized logistic regression, the model estimates one coeff
   - Repeated stratified cross-validation should be used with small sample sizes to avoid overfitting, to ensure more representative folds and to get robust performance estimates.
   - For xgboost, decrease the risk of overfitting by using ``early_stopping_rounds``` and lower values for ```max_depth``` to decrease decision tree complexity, ```colsample_bytree``` and ``colsample_bynode``` to diversify feature usage, and ```eta``` to reduce the learning rate.
 
-**Non-linear relationships and interactions**: microbiome datasets frequently exhibit complex, nonlinear relationships between microbial features and outcomes, due to microbial interactions, threshold effects and compositionality. Logistic regression models the outcome as a linear combination of the input features and therefore cannot naturally capture nonlinear patterns or interactions. In contrast, random forests and xgboost make no assumptions about linearity and are thus able to capture nonlinear thresholds and feature interactions.
+### Non-linear relationships and interactions
+Microbiome datasets frequently exhibit complex, nonlinear relationships between microbial features and outcomes, due to microbial interactions, threshold effects and compositionality. Logistic regression models the outcome as a linear combination of the input features and therefore cannot naturally capture nonlinear patterns or interactions. In contrast, random forests and xgboost make no assumptions about linearity and are thus able to capture nonlinear thresholds and feature interactions.
 
 **Possible solutions**:
   - Random forests and xgboost naturally handle nonlinear relationships and interactions, but stability and the detection of complex combinations can be improved by using a sufficient number of trees to capture subtle interactions. 
   - For xgboost, ensure a sufficient number of trees (use a large number of ```nrounds```) and a sufficient complexity of trees (e.g., ```max_depth```) to learn complex patterns, but use ```early_stopping_rounds``` and monitor training and validation metrics (e.g., logloss or AUC) to decrease the risk overfitting.
 
-**Imbalanced classes**: in microbiome studies, it is common to have fewer cases than controls, leading to class imbalance. When classes are imbalanced, logistic regression and xgboost models tend to minimize loss by favoring the majority class, since misclassifying minority samples contributes less to the overall loss. Similarly, classification tasks in random forest also tend to favor the majority class, because the splitting criteria (Gini impurity) are dominated by the majority class.
+### Imbalanced classes
+In microbiome studies, it is common to have fewer cases than controls, leading to class imbalance. When classes are imbalanced, logistic regression and xgboost models tend to minimize loss by favoring the majority class, since misclassifying minority samples contributes less to the overall loss. Similarly, classification tasks in random forest also tend to favor the majority class, because the splitting criteria (Gini impurity) are dominated by the majority class.
 
 **Possible solutions**: 
   - Use class weights to correct for this by assigning higher weights to samples from the minority class in the loss function (logistic regression and xgboost) or at split decisions and class probabilities in leaf nodes (random forest). This increases the penalty for misclassifying minority samples and forces the model to place more importance on minority class predictions. 
   - Stratified cross-validation should be used to ensure that samples from the minority class are included in each fold. 
   - Performance of the model should be evaluated using metrics that emphasize minority class (precision, recall and F1 score) or balanced (balanced accuracy and AUROC) performance.
 
-**Batch effects**: non biological variation introduced during sample collection, processing or sequencing can lead to batch effects. If batch is confounded with class labels, models may learn to predict batch artifacts rather than the true biological differences, leading to poor generalizability and spurious associations.
+### Batch effects
+Non-biological variation introduced during sample collection, processing or sequencing can lead to batch effects. If batch is confounded with class labels, models may learn to predict batch artifacts rather than the true biological differences, leading to poor generalizability and spurious associations.
 
 **Possible solutions**:
   - Apply batch correction methods, such as ComBat or Harmony, to adjust the data prior to modeling. However, if biological signal is confounded with batch, these corrections can remove meaningful variation along with technical noise. 
