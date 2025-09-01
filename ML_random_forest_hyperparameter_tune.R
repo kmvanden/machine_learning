@@ -46,8 +46,7 @@ dim(feat_filtered) # 70 935
 feat_rel_abund <- feat_filtered/rowSums(feat_filtered)
 
 # add pseudocount and perform CLR transformation
-feat_rel_abund[feat_rel_abund == 0] <- 1e-6
-feat_clr <- clr(feat_rel_abund)
+feat_clr <- clr(feat_rel_abund + 1e-6)
 feat <- as.data.frame(feat_clr)
 
 
