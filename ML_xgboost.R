@@ -44,8 +44,7 @@ dim(feat_filtered) # 70 935
 feat_rel_abund <- feat_filtered/rowSums(feat_filtered)
 
 # add pseudocount and perform CLR transformation
-feat_rel_abund[feat_rel_abund == 0] <- 1e-6
-feat_clr <- clr(feat_rel_abund)
+feat_clr <- clr(feat_rel_abund + 1e-6)
 feat <- as.data.frame(feat_clr)
 
 
@@ -1963,8 +1962,8 @@ bounds <- list(eta = c(0.001, 0.02),
 set.seed(1234) # reproducible search of initial points
 optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, feat_cols = all_feat_cols), # wrapper to pass dataset and feature columns to scoring_fucntion
                    bounds = bounds,
-                   initPoints = 12,
-                   iters.n = 10,
+                   initPoints = 22,
+                   iters.n = 50,
                    acq = "ei",
                    parallel = FALSE,
                    verbose = 1)
@@ -2072,8 +2071,8 @@ bounds <- list(eta = c(0.001, 0.02),
 set.seed(1234) # reproducible search of initial points
 optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, feat_cols = all_feat_cols), # wrapper to pass dataset and feature columns to scoring_fucntion
                    bounds = bounds,
-                   initPoints = 12,
-                   iters.n = 10,
+                   initPoints = 22,
+                   iters.n = 50,
                    acq = "ei",
                    parallel = FALSE,
                    verbose = 1)
@@ -2173,8 +2172,8 @@ doParallel::registerDoParallel(parallel::detectCores() - 1)
 set.seed(1234)
 optObj <- bayesOpt(FUN = scoring_function,
                    bounds = bounds,
-                   initPoints = 12,
-                   iters.n = 10,
+                   initPoints = 22,
+                   iters.n = 50,
                    acq = "ei",
                    parallel = TRUE,
                    verbose = 1)
@@ -2275,8 +2274,8 @@ doParallel::registerDoParallel(parallel::detectCores() - 1)
 set.seed(1234)
 optObj <- bayesOpt(FUN = scoring_function,
                    bounds = bounds,
-                   initPoints = 12,
-                   iters.n = 10,
+                   initPoints = 22,
+                   iters.n = 50,
                    acq = "ei",
                    parallel = TRUE,
                    verbose = 1)
@@ -2480,14 +2479,14 @@ target_var_numeric <- "condition_numeric"
 
 
 ### run final evaluation
-final_results <- final_xgb_evaluation(best_params = best_params,
-                                      metagen = metagen,
-                                      all_feat_cols = all_feat_cols,
-                                      target_var = "condition",
-                                      target_var_numeric = "condition_numeric",
-                                      n_repeats = 50,
-                                      n_folds = 5)
-
+final_results_log <- final_xgb_evaluation(best_params = best_params,
+                                          metagen = metagen,
+                                          all_feat_cols = all_feat_cols,
+                                          target_var = "condition",
+                                          target_var_numeric = "condition_numeric",
+                                          n_repeats = 50,
+                                          n_folds = 5)
+  
 ### functions to analyze the output of final_xgb_evaluation
 
 ### summarize performance metrics (same as for tune_xgb_param)
@@ -2496,7 +2495,7 @@ final_results <- final_xgb_evaluation(best_params = best_params,
 summarize_performance <- function(results_list) {
   dplyr::bind_rows(lapply(results_list, `[[`, "summary"))
 }
-summarize_performance(final_results)
+summarize_performance(final_results_log)
 
 
 ### feature importance (importance of features across parameter settings)
@@ -2507,8 +2506,8 @@ final_feature_importance <- function(results_list) {
     return(df)
   })
 }
-feature_freq_final <- final_feature_importance(final_results)
-feature_freq_final
+feature_freq_final_log <- final_feature_importance(final_results_log)
+feature_freq_final_log
 
 # plot feature frequency/selection by importance(mean gain or mean cover)
 # uses the all_importances_df
@@ -2517,8 +2516,8 @@ plot_feature_stability_final <- function(all_importances_df, x = "freq_selected"
     geom_point(alpha = 0.6, color = "blue") + theme_minimal() +
     labs(title = "Feature importance stability", x = x, y = y)
 } 
-plot_feature_stability_final(feature_freq_final, x = "freq_selected", y = "mean_gain")
-plot_feature_stability_final(feature_freq_final, x = "freq_selected", y = "mean_cover")
+plot_feature_stability_final(feature_freq_final_log, x = "freq_selected", y = "mean_gain")
+plot_feature_stability_final(feature_freq_final_log, x = "freq_selected", y = "mean_cover")
 
 # number of features selected in more than threshold_frac folds
 # uses all_importances_df
@@ -2527,7 +2526,7 @@ get_feature_stability_table_final <- function(all_importances_df, threshold_frac
   all_importances_df %>%
     summarise(n_features_selected = sum(freq_selected >= threshold), .groups = "drop")
 }
-get_feature_stability_table_final(feature_freq_final, threshold_frac = 0.4, n_repeats = 50)
+get_feature_stability_table_final(feature_freq_final_log, threshold_frac = 0.4, n_repeats = 50)
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
@@ -2535,7 +2534,7 @@ get_mean_feature_frequency_final <- function(all_importances_df) {
   all_importances_df %>%
     summarise(mean_frequency_selection = mean(freq_selected), .groups = "drop")
 }
-get_mean_feature_frequency_final(feature_freq_final)
+get_mean_feature_frequency_final(feature_freq_final_log)
 
 
 ### logloss and overfitting analysis
@@ -2548,8 +2547,8 @@ extract_logloss_df_final <- function(results_list) {
     return(df)
   })
 }
-logloss_final <- extract_logloss_df_final(final_results)
-logloss_final
+logloss_final_log <- extract_logloss_df_final(final_results_log)
+logloss_final_log
 
 # plot logloss
 # uses logloss_df
@@ -2586,9 +2585,9 @@ plot_logloss_curve_final <- function(logloss_df, type = "test", show_mean = TRUE
   
   p + labs(title = "Logloss curves", x = "Boosting round", y = "Logloss")
 }
-plot_logloss_curve_final(logloss_final, type = "test", show_mean = TRUE)
-plot_logloss_curve_final(logloss_final, type = "train", show_mean = FALSE)
-plot_logloss_curve_final(logloss_final, type = "both", show_mean = FALSE)
+plot_logloss_curve_final(logloss_final_log, type = "test", show_mean = TRUE)
+plot_logloss_curve_final(logloss_final_log, type = "train", show_mean = FALSE)
+plot_logloss_curve_final(logloss_final_log, type = "both", show_mean = FALSE)
 
 # prepare logloss gap
 # uses logloss_df, creates logloss_gap_df
@@ -2603,7 +2602,7 @@ prepare_logloss_gap_final <- function(logloss_df) {
       .groups = "drop"
     )
 }
-logloss_gap_final <- prepare_logloss_gap_final(logloss_final)
+logloss_gap_final_log <- prepare_logloss_gap_final(logloss_final_log)
 
 # plot generalization gap (visually assess overfitting)
 # uses logloss_gap_df
@@ -2618,7 +2617,7 @@ plot_logloss_gap_final <- function(logloss_gap_df) {
     )
 }
 
-plot_logloss_gap_final(logloss_gap_final)
+plot_logloss_gap_final(logloss_gap_final_log)
 
 
 ########################################################################################################
