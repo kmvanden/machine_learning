@@ -1207,7 +1207,7 @@ confirmed_boruta_df <- confirmed_boruta_df %>% arrange(desc(count))
 ggplot(confirmed_boruta_df, aes(x = reorder(Feature, count), y = count)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
   labs(title = "Feature selection frequency across Boruta repeats",
-       x = "Feature", y = paste("Number of Runs Selected (out of", n_repeats, ")"))  
+       x = "Feature", y = paste("Number of runs selected (out of", n_repeats, ")"))  
 
 # plot by proportion
 ggplot(confirmed_boruta_df, aes(x = reorder(Feature, proportion), y = proportion)) +
