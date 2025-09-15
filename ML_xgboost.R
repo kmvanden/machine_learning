@@ -12,6 +12,7 @@ library(Matrix)
 library(ParBayesianOptimization)
 library(doParallel)
 library(foreach)
+library(SHAPforxgboost)
 
 
 # set.seed
@@ -51,6 +52,8 @@ feat <- as.data.frame(feat_clr)
 # rownames of metadata need to match the rownames of the feature table
 all(rownames(meta) == rownames(feat))
 feat$sample_name <- rownames(feat) # add column sample_name
+meta <- meta[, -3] # remove unnecessary meta column
+
 
 ### merge metadata and feature table
 metagen <- merge(meta, feat, by = "sample_name", all.x = TRUE)
@@ -70,10 +73,12 @@ metagen$condition <- factor(metagen$condition, levels = c("healthy", "disease"))
 all_feat_cols <- setdiff(colnames(metagen), c("condition", "condition_numeric"))
 
 
-#####################################################################
-########   BASELINE XGBOOST MODEL - DEFAULT HYPERPARAMETERS   #######
-#####################################################################
+############################################################
+###   BASELINE XGBOOST MODEL - DEFAULT HYPERPARAMETERS   ###
+############################################################
 
+# data to be used in the model
+str(metagen)
 
 # set seed
 set.seed(1234)
@@ -177,10 +182,12 @@ mean_importance <- all_xgb_importances %>%
 head(mean_importance, 20)
 
 
-######################################################################################
-########   BASELINE XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING   #######
-######################################################################################
+#############################################################################
+###   BASELINE XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING   ###
+#############################################################################
 
+# data to be used in the model
+str(metagen)
 
 # set seed
 set.seed(1234)
@@ -310,13 +317,15 @@ summary(unlist(best_nrounds_list))
 
 
 ### best_nrounds is very low -> model overfitting very quickly
-### default hyperparameters too aggressive for microbiome data (high-dimensional, low signal-to-noise ratio, small sample sizes)
+### default hyperparameters too aggressive
 
 
-#############################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - LEARNING RATE   #######
-#############################################################################################
+########################################################################
+###   XGBOOST MODEL - HYPERPARAMETER TUNING + EARLY STOPPING - ETA   ###
+########################################################################
 
+# data to be used in the model
+str(metagen)
 
 # list of baseline hyperparameters to use (excluding eta)
 base_params <- list(objective = "binary:logistic",
@@ -602,11 +611,11 @@ ggplot(logloss_gap, aes(x = iter, y = mean_gap)) +
        y = "Gap", x = "Boosting round")
 
 
-############################################################################
-########   XGBOOST MODEL - FUNCTION TO EXPLORE HYPERPARAMETER SPACE  #######
-############################################################################
+################################################################
+###   XGBOOST MODEL - FUNCTION TO GRID TUNE HYPERPARAMETERS  ###
+################################################################
 
-### function to explore hyperparameter space with xgboost
+### function to grid tune hyperparameters with xgboost
 
 tune_xgb_param <- function(param_grid_name,
                            param_grid_values,
@@ -847,73 +856,73 @@ all_results_eta <- tune_xgb_param(param_grid_name = "eta",
 ### functions to analyze the output of tune_xgb_param
 
 ### summarize performance metrics 
-# uses ouput of tune_xgb_param
+# uses output of tune_xgb_param
 # mean and SD of balanced accuracy, f1, precision, sensitivity, specificity, auc, logloss, best nrounds
-summarize_performance <- function(results_list) {
+tune_summarize_performance <- function(results_list) {
   dplyr::bind_rows(lapply(results_list, `[[`, "summary"))
 }
-summarize_performance(all_results_eta)
+tune_summarize_performance(all_results_eta)
 
  
 ### feature importance (importance of features across parameter settings)
-# uses ouput of tune_xgb_param, creates the all_importances_df
+# uses output of tune_xgb_param, creates the all_importances_df
 # combine feature importances across parameter values into a long-format table
 # extracts numeric parameter value from list name (param_grid_values) and adds as column to each row
-combine_feature_importance <- function(results_list, param_name = "eta") {
+tune_feature_importance <- function(results_list, param_name = "eta") {
   purrr::imap_dfr(results_list, function(res, name) {
     df <- res$feature_importance
     df[[param_name]] <- as.numeric(gsub(paste0(param_name, "_"), "", name))
     df
   })
 }
-feature_freq_eta <- combine_feature_importance(all_results_eta, param_name = "eta")
+feature_freq_eta <- tune_feature_importance(all_results_eta, param_name = "eta")
 
 # plot feature selection by frequency/selection across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency <- function(all_importances_df, feature, param_name = "eta") {
+tune_plot_feature_selection_frequency <- function(all_importances_df, feature, param_name = "eta") {
   filtered_df <- dplyr::filter(all_importances_df, Feature == feature)
   ggplot(filtered_df, aes(x = .data[[param_name]], y = freq_selected)) +
     geom_line() + geom_point() +
     labs(title = paste("Frequency of selection vs", param_name, "for", feature),
       x = param_name, y = "Frequency of selection")
 }
-plot_feature_selection_frequency(feature_freq_eta, feature = "Acutalibacter_muris", param_name = "eta")
+tune_plot_feature_selection_frequency(feature_freq_eta, feature = "Acutalibacter_muris", param_name = "eta")
 
 # plot feature frequency/selection by importance(mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability <- function(all_importances_df, x = "freq_selected", y = "mean_gain", color_by = "eta") {
+tune_plot_feature_stability <- function(all_importances_df, x = "freq_selected", y = "mean_gain", color_by = "eta") {
   ggplot(all_importances_df, aes(x = .data[[x]], y = .data[[y]], color = as.factor(.data[[color_by]]))) +
     geom_point(alpha = 0.6) + theme_minimal() +
     labs(title = "Feature importance stability", x = x, y = y, color = color_by)
 }
-plot_feature_stability(feature_freq_eta, x = "freq_selected", y = "mean_gain", color_by = "eta")
-plot_feature_stability(feature_freq_eta, x = "freq_selected", y = "mean_cover", color_by = "eta")
+tune_plot_feature_stability(feature_freq_eta, x = "freq_selected", y = "mean_gain", color_by = "eta")
+tune_plot_feature_stability(feature_freq_eta, x = "freq_selected", y = "mean_cover", color_by = "eta")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table <- function(all_importances_df, threshold_frac = 0.4, n_repeats = 50, param_name = "eta") {
+tune_feature_stability_table <- function(all_importances_df, threshold_frac = 0.4, n_repeats = 50, param_name = "eta") {
   threshold <- threshold_frac * n_repeats * 5 # 5 folds per repeat
   all_importances_df %>%
     group_by_at(param_name) %>%
     summarise(n_features_selected = sum(freq_selected >= threshold), .groups = "drop")
 }
-get_feature_stability_table(feature_freq_eta, threshold_frac = 0.4, n_repeats = 50, param_name = "eta")
+tune_feature_stability_table(feature_freq_eta, threshold_frac = 0.4, n_repeats = 50, param_name = "eta")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency <- function(all_importances_df, param_name = "eta") {
+tune_mean_feature_frequency <- function(all_importances_df, param_name = "eta") {
   all_importances_df %>%
     group_by_at(param_name) %>%
     summarise(mean_frequency_selection = mean(freq_selected), .groups = "drop")
 }
-get_mean_feature_frequency(feature_freq_eta, param_name = "eta")
+tune_mean_feature_frequency(feature_freq_eta, param_name = "eta")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs (training/testing loss per boosting round) for all param_name values
 # combines values into one table with Fold and param_name labeled
 # uses output of tune_xgb_param, creates logloss_df
-extract_logloss_df <- function(results_list, param_name = "eta") {
+tune_extract_logloss_df <- function(results_list, param_name = "eta") {
   purrr::imap_dfr(results_list, function(res, name) {
     logs <- res$eval_logs
     df <- dplyr::bind_rows(logs, .id = "Fold")
@@ -921,12 +930,12 @@ extract_logloss_df <- function(results_list, param_name = "eta") {
     df
   })
 }
-logloss_eta <- extract_logloss_df(all_results_eta, param_name = "eta")
+logloss_eta <- tune_extract_logloss_df(all_results_eta, param_name = "eta")
 
 # plot logloss
 # uses logloss_df
 # plots change of logloss over boosting rounds (type = "train", "test", or "both")
-plot_logloss_curve <- function(logloss_df, type = "test", show_mean = TRUE, param_name = "eta") {
+tune_plot_logloss_curve <- function(logloss_df, type = "test", show_mean = TRUE, param_name = "eta") {
   df <- logloss_df %>%
     mutate(!!param_name := as.numeric(gsub(paste0(param_name, "_"), "", .data[[param_name]])))
   
@@ -955,14 +964,14 @@ plot_logloss_curve <- function(logloss_df, type = "test", show_mean = TRUE, para
   
   p + labs(title = "Logloss curves", x = "Boosting round", y = "Logloss")
 }
-plot_logloss_curve(logloss_eta, type = "test", show_mean = TRUE, param_name = "eta")
-plot_logloss_curve(logloss_eta, type = "train", show_mean = FALSE, param_name = "eta")
-plot_logloss_curve(logloss_eta, type = "both", show_mean = FALSE, param_name = "eta")
+tune_plot_logloss_curve(logloss_eta, type = "test", show_mean = TRUE, param_name = "eta")
+tune_plot_logloss_curve(logloss_eta, type = "train", show_mean = FALSE, param_name = "eta")
+tune_plot_logloss_curve(logloss_eta, type = "both", show_mean = FALSE, param_name = "eta")
 
 # prepare logloss gap
 # uses logloss_df, creates logloss_gap_df
 # calculates the generalization gap (test loss - train loss) over boosting rounds and parameter values
-prepare_logloss_gap <- function(logloss_df, param_name = "eta") {
+tune_logloss_gap <- function(logloss_df, param_name = "eta") {
   logloss_df %>%
     mutate(!!param_name := as.numeric(gsub(paste0(param_name, "_"), "", .data[[param_name]]))) %>%
     group_by_at(c(param_name, "iter")) %>%
@@ -971,24 +980,26 @@ prepare_logloss_gap <- function(logloss_df, param_name = "eta") {
               gap = mean(test_logloss_mean - train_logloss_mean, na.rm = TRUE),
               .groups = "drop")
 }
-logloss_gap_eta <- prepare_logloss_gap(logloss_eta, param_name = "eta")
+logloss_gap_eta <- tune_logloss_gap(logloss_eta, param_name = "eta")
 
 # plot generalization gap (visually assess overfitting)
 # uses logloss_gap_df
-plot_logloss_gap <- function(logloss_gap_df, param_name = "eta") {
+tune_plot_logloss_gap <- function(logloss_gap_df, param_name = "eta") {
   ggplot(logloss_gap_df, aes(x = iter, y = gap)) +
     geom_line() + theme_minimal() +
     facet_wrap(as.formula(paste("~", param_name)), scales = "free_x") +
     labs(title = paste("Mean logloss gap (test - train) across boosting rounds"),
       x = "Boosting round", y = "Gap")
 }
-plot_logloss_gap(logloss_gap_eta, param_name = "eta")
+tune_plot_logloss_gap(logloss_gap_eta, param_name = "eta")
 
 
-#############################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - CLASS WEIGHTS   #######
-#############################################################################################
+#####################################################################################
+###   XGBOOST MODEL - HYPERPARAMETER TUNING + EARLY STOPPING - SCALE POS WEIGHT   ###
+#####################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(0.5, 1.0, 1.5, 2.0, 2.5, 3.0)
@@ -1016,58 +1027,60 @@ all_results_class_weight <- tune_xgb_param(param_grid_name = "scale_pos_weight",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_class_weight)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_class_weight)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_class_weight <- combine_feature_importance(all_results_class_weight, param_name = "scale_pos_weight")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_class_weight <- tune_feature_importance(all_results_class_weight, param_name = "scale_pos_weight")
 feature_import_class_weight %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_class_weight, feature = "Acutalibacter_muris", param_name = "scale_pos_weight")
+tune_plot_feature_selection_frequency(feature_import_class_weight, feature = "Acutalibacter_muris", param_name = "scale_pos_weight")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_class_weight, x = "freq_selected", y = "mean_gain", color_by = "scale_pos_weight")
-plot_feature_stability(feature_import_class_weight, x = "freq_selected", y = "mean_cover", color_by = "scale_pos_weight")
+tune_plot_feature_stability(feature_import_class_weight, x = "freq_selected", y = "mean_gain", color_by = "scale_pos_weight")
+tune_plot_feature_stability(feature_import_class_weight, x = "freq_selected", y = "mean_cover", color_by = "scale_pos_weight")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_class_weight, threshold_frac = 0.4, n_repeats = 10, param_name = "scale_pos_weight")
+tune_feature_stability_table(feature_import_class_weight, threshold_frac = 0.4, n_repeats = 10, param_name = "scale_pos_weight")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_class_weight, param_name = "scale_pos_weight")
+tune_mean_feature_frequency(feature_import_class_weight, param_name = "scale_pos_weight")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_class_weight <- extract_logloss_df(all_results_class_weight, param_name = "scale_pos_weight")
+logloss_class_weight <- tune_extract_logloss_df(all_results_class_weight, param_name = "scale_pos_weight")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_class_weight, type = "test", show_mean = TRUE, param_name = "scale_pos_weight")
-plot_logloss_curve(logloss_class_weight, type = "train", show_mean = FALSE, param_name = "scale_pos_weight")
-plot_logloss_curve(logloss_class_weight, type = "both", show_mean = FALSE, param_name = "scale_pos_weight")
+tune_plot_logloss_curve(logloss_class_weight, type = "test", show_mean = TRUE, param_name = "scale_pos_weight")
+tune_plot_logloss_curve(logloss_class_weight, type = "train", show_mean = FALSE, param_name = "scale_pos_weight")
+tune_plot_logloss_curve(logloss_class_weight, type = "both", show_mean = FALSE, param_name = "scale_pos_weight")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_class_weight <- prepare_logloss_gap(logloss_class_weight, param_name = "scale_pos_weight")
+logloss_gap_class_weight <- tune_logloss_gap(logloss_class_weight, param_name = "scale_pos_weight")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_class_weight, param_name = "scale_pos_weight")
+tune_plot_logloss_gap(logloss_gap_class_weight, param_name = "scale_pos_weight")
 
 
-#########################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MAX DEPTH   #######
-#########################################################################################
+################################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MAX DEPTH   ###
+################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(2, 3, 4, 5, 6, 7)
@@ -1095,58 +1108,60 @@ all_results_max_depth <- tune_xgb_param(param_grid_name = "max_depth",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_max_depth)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_max_depth)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_max_depth <- combine_feature_importance(all_results_max_depth, param_name = "max_depth")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_max_depth <- tune_feature_importance(all_results_max_depth, param_name = "max_depth")
 feature_import_max_depth %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_max_depth, feature = "Lachnoclostridium_sp._YL32", param_name = "max_depth")
+tune_plot_feature_selection_frequency(feature_import_max_depth, feature = "Lachnoclostridium_sp._YL32", param_name = "max_depth")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_max_depth, x = "freq_selected", y = "mean_gain", color_by = "max_depth")
-plot_feature_stability(feature_import_max_depth, x = "freq_selected", y = "mean_cover", color_by = "max_depth")
+tune_plot_feature_stability(feature_import_max_depth, x = "freq_selected", y = "mean_gain", color_by = "max_depth")
+tune_plot_feature_stability(feature_import_max_depth, x = "freq_selected", y = "mean_cover", color_by = "max_depth")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_max_depth, threshold_frac = 0.4, n_repeats = 10, param_name = "max_depth")
+tune_feature_stability_table(feature_import_max_depth, threshold_frac = 0.4, n_repeats = 10, param_name = "max_depth")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_max_depth, param_name = "max_depth")
+tune_mean_feature_frequency(feature_import_max_depth, param_name = "max_depth")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_max_depth <- extract_logloss_df(all_results_max_depth, param_name = "max_depth")
+logloss_max_depth <- tune_extract_logloss_df(all_results_max_depth, param_name = "max_depth")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_max_depth, type = "test", show_mean = TRUE, param_name = "max_depth")
-plot_logloss_curve(logloss_max_depth, type = "train", show_mean = FALSE, param_name = "max_depth")
-plot_logloss_curve(logloss_max_depth, type = "both", show_mean = FALSE, param_name = "max_depth")
+tune_plot_logloss_curve(logloss_max_depth, type = "test", show_mean = TRUE, param_name = "max_depth")
+tune_plot_logloss_curve(logloss_max_depth, type = "train", show_mean = FALSE, param_name = "max_depth")
+tune_plot_logloss_curve(logloss_max_depth, type = "both", show_mean = FALSE, param_name = "max_depth")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_max_depth <- prepare_logloss_gap(logloss_max_depth, param_name = "max_depth")
+logloss_gap_max_depth <- tune_logloss_gap(logloss_max_depth, param_name = "max_depth")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_max_depth, param_name = "max_depth")
+tune_plot_logloss_gap(logloss_gap_max_depth, param_name = "max_depth")
 
 
-################################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MIN CHILD WEIGHT   #######
-################################################################################################
+#######################################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MIN CHILD WEIGHT   ###
+#######################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(1, 2, 3, 4, 5, 6)
@@ -1174,58 +1189,60 @@ all_results_min_child_weight <- tune_xgb_param(param_grid_name = "min_child_weig
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_min_child_weight)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_min_child_weight)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_min_child_weight <- combine_feature_importance(all_results_min_child_weight, param_name = "min_child_weight")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_min_child_weight <- tune_feature_importance(all_results_min_child_weight, param_name = "min_child_weight")
 feature_import_min_child_weight %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_min_child_weight, feature = "Lachnoclostridium_sp._YL32", param_name = "min_child_weight")
+tune_plot_feature_selection_frequency(feature_import_min_child_weight, feature = "Lachnoclostridium_sp._YL32", param_name = "min_child_weight")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_min_child_weight, x = "freq_selected", y = "mean_gain", color_by = "min_child_weight")
-plot_feature_stability(feature_import_min_child_weight, x = "freq_selected", y = "mean_cover", color_by = "min_child_weight")
+tune_plot_feature_stability(feature_import_min_child_weight, x = "freq_selected", y = "mean_gain", color_by = "min_child_weight")
+tune_plot_feature_stability(feature_import_min_child_weight, x = "freq_selected", y = "mean_cover", color_by = "min_child_weight")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_min_child_weight, threshold_frac = 0.4, n_repeats = 10, param_name = "min_child_weight")
+tune_feature_stability_table(feature_import_min_child_weight, threshold_frac = 0.4, n_repeats = 10, param_name = "min_child_weight")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_min_child_weight, param_name = "min_child_weight")
+tune_mean_feature_frequency(feature_import_min_child_weight, param_name = "min_child_weight")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_min_child_weight <- extract_logloss_df(all_results_min_child_weight, param_name = "min_child_weight")
+logloss_min_child_weight <- tune_extract_logloss_df(all_results_min_child_weight, param_name = "min_child_weight")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_min_child_weight, type = "test", show_mean = FALSE, param_name = "min_child_weight")
-plot_logloss_curve(logloss_min_child_weight, type = "train", show_mean = FALSE, param_name = "min_child_weight")
-plot_logloss_curve(logloss_min_child_weight, type = "both", show_mean = FALSE, param_name = "min_child_weight")
+tune_plot_logloss_curve(logloss_min_child_weight, type = "test", show_mean = FALSE, param_name = "min_child_weight")
+tune_plot_logloss_curve(logloss_min_child_weight, type = "train", show_mean = FALSE, param_name = "min_child_weight")
+tune_plot_logloss_curve(logloss_min_child_weight, type = "both", show_mean = FALSE, param_name = "min_child_weight")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_min_child_weight <- prepare_logloss_gap(logloss_min_child_weight, param_name = "min_child_weight")
+logloss_gap_min_child_weight <- tune_logloss_gap(logloss_min_child_weight, param_name = "min_child_weight")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_min_child_weight, param_name = "min_child_weight")
+tune_plot_logloss_gap(logloss_gap_min_child_weight, param_name = "min_child_weight")
 
 
-#########################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - SUBSAMPLE   #######
-#########################################################################################
+################################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - SUBSAMPLE   ###
+################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(1, 0.9, 0.8, 0.7, 0.6, 0.5)
@@ -1253,58 +1270,60 @@ all_results_subsample <- tune_xgb_param(param_grid_name = "subsample",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_subsample)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_subsample)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_subsample <- combine_feature_importance(all_results_subsample, param_name = "subsample")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_subsample <- tune_feature_importance(all_results_subsample, param_name = "subsample")
 feature_import_subsample %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_subsample, feature = "Lachnoclostridium_sp._YL32", param_name = "subsample")
+tune_plot_feature_selection_frequency(feature_import_subsample, feature = "Lachnoclostridium_sp._YL32", param_name = "subsample")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_subsample, x = "freq_selected", y = "mean_gain", color_by = "subsample")
-plot_feature_stability(feature_import_subsample, x = "freq_selected", y = "mean_cover", color_by = "subsample")
+tune_plot_feature_stability(feature_import_subsample, x = "freq_selected", y = "mean_gain", color_by = "subsample")
+tune_plot_feature_stability(feature_import_subsample, x = "freq_selected", y = "mean_cover", color_by = "subsample")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_subsample, threshold_frac = 0.4, n_repeats = 10, param_name = "subsample")
+tune_feature_stability_table(feature_import_subsample, threshold_frac = 0.4, n_repeats = 10, param_name = "subsample")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_subsample, param_name = "subsample")
+tune_mean_feature_frequency(feature_import_subsample, param_name = "subsample")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_subsample <- extract_logloss_df(all_results_subsample, param_name = "subsample")
+logloss_subsample <- tune_extract_logloss_df(all_results_subsample, param_name = "subsample")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_subsample, type = "test", show_mean = TRUE, param_name = "subsample")
-plot_logloss_curve(logloss_subsample, type = "train", show_mean = FALSE, param_name = "subsample")
-plot_logloss_curve(logloss_subsample, type = "both", show_mean = FALSE, param_name = "subsample")
+tune_plot_logloss_curve(logloss_subsample, type = "test", show_mean = TRUE, param_name = "subsample")
+tune_plot_logloss_curve(logloss_subsample, type = "train", show_mean = FALSE, param_name = "subsample")
+tune_plot_logloss_curve(logloss_subsample, type = "both", show_mean = FALSE, param_name = "subsample")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_subsample <- prepare_logloss_gap(logloss_subsample, param_name = "subsample")
+logloss_gap_subsample <- tune_logloss_gap(logloss_subsample, param_name = "subsample")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_subsample, param_name = "subsample")
+tune_plot_logloss_gap(logloss_gap_subsample, param_name = "subsample")
 
 
-################################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYTREE   #######
-################################################################################################
+#######################################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYTREE   ###
+#######################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(1, 0.9, 0.8, 0.7, 0.6, 0.5)
@@ -1332,58 +1351,60 @@ all_results_colsample_bytree <- tune_xgb_param(param_grid_name = "colsample_bytr
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_colsample_bytree)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_colsample_bytree)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_colsample_bytree <- combine_feature_importance(all_results_colsample_bytree, param_name = "colsample_bytree")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_colsample_bytree <- tune_feature_importance(all_results_colsample_bytree, param_name = "colsample_bytree")
 feature_import_colsample_bytree %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_colsample_bytree, feature = "Lachnoclostridium_sp._YL32", param_name = "colsample_bytree")
+tune_plot_feature_selection_frequency(feature_import_colsample_bytree, feature = "Lachnoclostridium_sp._YL32", param_name = "colsample_bytree")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_colsample_bytree, x = "freq_selected", y = "mean_gain", color_by = "colsample_bytree")
-plot_feature_stability(feature_import_colsample_bytree, x = "freq_selected", y = "mean_cover", color_by = "colsample_bytree")
+tune_plot_feature_stability(feature_import_colsample_bytree, x = "freq_selected", y = "mean_gain", color_by = "colsample_bytree")
+tune_plot_feature_stability(feature_import_colsample_bytree, x = "freq_selected", y = "mean_cover", color_by = "colsample_bytree")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_colsample_bytree, threshold_frac = 0.4, n_repeats = 10, param_name = "colsample_bytree")
+tune_feature_stability_table(feature_import_colsample_bytree, threshold_frac = 0.4, n_repeats = 10, param_name = "colsample_bytree")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_colsample_bytree, param_name = "colsample_bytree")
+tune_mean_feature_frequency(feature_import_colsample_bytree, param_name = "colsample_bytree")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_colsample_bytree <- extract_logloss_df(all_results_colsample_bytree, param_name = "colsample_bytree")
+logloss_colsample_bytree <- tune_extract_logloss_df(all_results_colsample_bytree, param_name = "colsample_bytree")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_colsample_bytree, type = "test", show_mean = TRUE, param_name = "colsample_bytree")
-plot_logloss_curve(logloss_colsample_bytree, type = "train", show_mean = FALSE, param_name = "colsample_bytree")
-plot_logloss_curve(logloss_colsample_bytree, type = "both", show_mean = FALSE, param_name = "colsample_bytree")
+tune_plot_logloss_curve(logloss_colsample_bytree, type = "test", show_mean = TRUE, param_name = "colsample_bytree")
+tune_plot_logloss_curve(logloss_colsample_bytree, type = "train", show_mean = FALSE, param_name = "colsample_bytree")
+tune_plot_logloss_curve(logloss_colsample_bytree, type = "both", show_mean = FALSE, param_name = "colsample_bytree")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_colsample_bytree <- prepare_logloss_gap(logloss_colsample_bytree, param_name = "colsample_bytree")
+logloss_gap_colsample_bytree <- tune_logloss_gap(logloss_colsample_bytree, param_name = "colsample_bytree")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_colsample_bytree, param_name = "colsample_bytree")
+tune_plot_logloss_gap(logloss_gap_colsample_bytree, param_name = "colsample_bytree")
 
 
-################################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYNODE   #######
-################################################################################################
+#######################################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - COLSAMPLE_BYNODE   ###
+#######################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(1, 0.9, 0.8, 0.7, 0.6, 0.5)
@@ -1411,58 +1432,60 @@ all_results_colsample_bynode <- tune_xgb_param(param_grid_name = "colsample_byno
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_colsample_bynode)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_colsample_bynode)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_colsample_bynode <- combine_feature_importance(all_results_colsample_bynode, param_name = "colsample_bynode")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_colsample_bynode <- tune_feature_importance(all_results_colsample_bynode, param_name = "colsample_bynode")
 feature_import_colsample_bynode %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_colsample_bynode, feature = "Lachnoclostridium_sp._YL32", param_name = "colsample_bynode")
+tune_plot_feature_selection_frequency(feature_import_colsample_bynode, feature = "Lachnoclostridium_sp._YL32", param_name = "colsample_bynode")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_colsample_bynode, x = "freq_selected", y = "mean_gain", color_by = "colsample_bynode")
-plot_feature_stability(feature_import_colsample_bynode, x = "freq_selected", y = "mean_cover", color_by = "colsample_bynode")
+tune_plot_feature_stability(feature_import_colsample_bynode, x = "freq_selected", y = "mean_gain", color_by = "colsample_bynode")
+tune_plot_feature_stability(feature_import_colsample_bynode, x = "freq_selected", y = "mean_cover", color_by = "colsample_bynode")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_colsample_bynode, threshold_frac = 0.4, n_repeats = 10, param_name = "colsample_bynode")
+tune_feature_stability_table(feature_import_colsample_bynode, threshold_frac = 0.4, n_repeats = 10, param_name = "colsample_bynode")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_colsample_bynode, param_name = "colsample_bynode")
+tune_mean_feature_frequency(feature_import_colsample_bynode, param_name = "colsample_bynode")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_colsample_bynode <- extract_logloss_df(all_results_colsample_bynode, param_name = "colsample_bynode")
+logloss_colsample_bynode <- tune_extract_logloss_df(all_results_colsample_bynode, param_name = "colsample_bynode")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_colsample_bynode, type = "test", show_mean = TRUE, param_name = "colsample_bynode")
-plot_logloss_curve(logloss_colsample_bynode, type = "train", show_mean = FALSE, param_name = "colsample_bynode")
-plot_logloss_curve(logloss_colsample_bynode, type = "both", show_mean = FALSE, param_name = "colsample_bynode")
+tune_plot_logloss_curve(logloss_colsample_bynode, type = "test", show_mean = TRUE, param_name = "colsample_bynode")
+tune_plot_logloss_curve(logloss_colsample_bynode, type = "train", show_mean = FALSE, param_name = "colsample_bynode")
+tune_plot_logloss_curve(logloss_colsample_bynode, type = "both", show_mean = FALSE, param_name = "colsample_bynode")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_colsample_bynode <- prepare_logloss_gap(logloss_colsample_bynode, param_name = "colsample_bynode")
+logloss_gap_colsample_bynode <- tune_logloss_gap(logloss_colsample_bynode, param_name = "colsample_bynode")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_colsample_bynode, param_name = "colsample_bynode")
+tune_plot_logloss_gap(logloss_gap_colsample_bynode, param_name = "colsample_bynode")
 
 
-######################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - LAMBDA   #######
-######################################################################################
+#############################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - LAMBDA   ###
+#############################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(0.1, 0.5, 1, 1.5, 5, 10)
@@ -1490,58 +1513,60 @@ all_results_lambda <- tune_xgb_param(param_grid_name = "lambda",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_lambda)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_lambda)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_lambda <- combine_feature_importance(all_results_lambda, param_name = "lambda")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_lambda <- tune_feature_importance(all_results_lambda, param_name = "lambda")
 feature_import_lambda %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_lambda, feature = "Lachnoclostridium_sp._YL32", param_name = "lambda")
+tune_plot_feature_selection_frequency(feature_import_lambda, feature = "Lachnoclostridium_sp._YL32", param_name = "lambda")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_lambda, x = "freq_selected", y = "mean_gain", color_by = "lambda")
-plot_feature_stability(feature_import_lambda, x = "freq_selected", y = "mean_cover", color_by = "lambda")
+tune_plot_feature_stability(feature_import_lambda, x = "freq_selected", y = "mean_gain", color_by = "lambda")
+tune_plot_feature_stability(feature_import_lambda, x = "freq_selected", y = "mean_cover", color_by = "lambda")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_lambda, threshold_frac = 0.4, n_repeats = 10, param_name = "lambda")
+tune_feature_stability_table(feature_import_lambda, threshold_frac = 0.4, n_repeats = 10, param_name = "lambda")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_lambda, param_name = "lambda")
+tune_mean_feature_frequency(feature_import_lambda, param_name = "lambda")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_lambda <- extract_logloss_df(all_results_lambda, param_name = "lambda")
+logloss_lambda <- tune_extract_logloss_df(all_results_lambda, param_name = "lambda")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_lambda, type = "test", show_mean = TRUE, param_name = "lambda")
-plot_logloss_curve(logloss_lambda, type = "train", show_mean = FALSE, param_name = "lambda")
-plot_logloss_curve(logloss_lambda, type = "both", show_mean = FALSE, param_name = "lambda")
+tune_plot_logloss_curve(logloss_lambda, type = "test", show_mean = TRUE, param_name = "lambda")
+tune_plot_logloss_curve(logloss_lambda, type = "train", show_mean = FALSE, param_name = "lambda")
+tune_plot_logloss_curve(logloss_lambda, type = "both", show_mean = FALSE, param_name = "lambda")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_lambda <- prepare_logloss_gap(logloss_lambda, param_name = "lambda")
+logloss_gap_lambda <- tune_logloss_gap(logloss_lambda, param_name = "lambda")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_lambda, param_name = "lambda") 
+tune_plot_logloss_gap(logloss_gap_lambda, param_name = "lambda") 
 
 
-#####################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - ALPHA   #######
-#####################################################################################
+############################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - ALPHA   ###
+############################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(0, 0.1, 0.5, 1, 1.5, 5)
@@ -1569,58 +1594,60 @@ all_results_alpha <- tune_xgb_param(param_grid_name = "alpha",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_alpha)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_alpha)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_alpha <- combine_feature_importance(all_results_alpha, param_name = "alpha")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_alpha <- tune_feature_importance(all_results_alpha, param_name = "alpha")
 feature_import_alpha %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_alpha, feature = "Lachnoclostridium_sp._YL32", param_name = "alpha")
+tune_plot_feature_selection_frequency(feature_import_alpha, feature = "Lachnoclostridium_sp._YL32", param_name = "alpha")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_alpha, x = "freq_selected", y = "mean_gain", color_by = "alpha")
-plot_feature_stability(feature_import_alpha, x = "freq_selected", y = "mean_cover", color_by = "alpha")
+tune_plot_feature_stability(feature_import_alpha, x = "freq_selected", y = "mean_gain", color_by = "alpha")
+tune_plot_feature_stability(feature_import_alpha, x = "freq_selected", y = "mean_cover", color_by = "alpha")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_alpha, threshold_frac = 0.4, n_repeats = 10, param_name = "alpha")
+tune_feature_stability_table(feature_import_alpha, threshold_frac = 0.4, n_repeats = 10, param_name = "alpha")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_alpha, param_name = "alpha")
+tune_mean_feature_frequency(feature_import_alpha, param_name = "alpha")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_alpha <- extract_logloss_df(all_results_alpha, param_name = "alpha")
+logloss_alpha <- tune_extract_logloss_df(all_results_alpha, param_name = "alpha")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_alpha, type = "test", show_mean = TRUE, param_name = "alpha")
-plot_logloss_curve(logloss_alpha, type = "train", show_mean = FALSE, param_name = "alpha")
-plot_logloss_curve(logloss_alpha, type = "both", show_mean = FALSE, param_name = "alpha")
+tune_plot_logloss_curve(logloss_alpha, type = "test", show_mean = TRUE, param_name = "alpha")
+tune_plot_logloss_curve(logloss_alpha, type = "train", show_mean = FALSE, param_name = "alpha")
+tune_plot_logloss_curve(logloss_alpha, type = "both", show_mean = FALSE, param_name = "alpha")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_alpha <- prepare_logloss_gap(logloss_alpha, param_name = "alpha")
+logloss_gap_alpha <- tune_logloss_gap(logloss_alpha, param_name = "alpha")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_alpha, param_name = "alpha") 
+tune_plot_logloss_gap(logloss_gap_alpha, param_name = "alpha") 
 
 
-#####################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - GAMMA   #######
-#####################################################################################
+############################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - GAMMA   ###
+############################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(0, 0.1, 0.5, 1, 1.5, 5)
@@ -1648,58 +1675,60 @@ all_results_gamma <- tune_xgb_param(param_grid_name = "gamma",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_gamma)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_gamma)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_gamma <- combine_feature_importance(all_results_gamma, param_name = "gamma")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_gamma <- tune_feature_importance(all_results_gamma, param_name = "gamma")
 feature_import_gamma %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_gamma, feature = "Lachnoclostridium_sp._YL32", param_name = "gamma")
+tune_plot_feature_selection_frequency(feature_import_gamma, feature = "Lachnoclostridium_sp._YL32", param_name = "gamma")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_gamma, x = "freq_selected", y = "mean_gain", color_by = "gamma")
-plot_feature_stability(feature_import_gamma, x = "freq_selected", y = "mean_cover", color_by = "gamma")
+tune_plot_feature_stability(feature_import_gamma, x = "freq_selected", y = "mean_gain", color_by = "gamma")
+tune_plot_feature_stability(feature_import_gamma, x = "freq_selected", y = "mean_cover", color_by = "gamma")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_gamma, threshold_frac = 0.4, n_repeats = 10, param_name = "gamma")
+tune_feature_stability_table(feature_import_gamma, threshold_frac = 0.4, n_repeats = 10, param_name = "gamma")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_gamma, param_name = "gamma")
+tune_mean_feature_frequency(feature_import_gamma, param_name = "gamma")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_gamma <- extract_logloss_df(all_results_gamma, param_name = "gamma")
+logloss_gamma <- tune_extract_logloss_df(all_results_gamma, param_name = "gamma")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_gamma, type = "test", show_mean = TRUE, param_name = "gamma")
-plot_logloss_curve(logloss_gamma, type = "train", show_mean = FALSE, param_name = "gamma")
-plot_logloss_curve(logloss_gamma, type = "both", show_mean = FALSE, param_name = "gamma")
+tune_plot_logloss_curve(logloss_gamma, type = "test", show_mean = TRUE, param_name = "gamma")
+tune_plot_logloss_curve(logloss_gamma, type = "train", show_mean = FALSE, param_name = "gamma")
+tune_plot_logloss_curve(logloss_gamma, type = "both", show_mean = FALSE, param_name = "gamma")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_gamma <- prepare_logloss_gap(logloss_gamma, param_name = "gamma")
+logloss_gap_gamma <- tune_logloss_gap(logloss_gamma, param_name = "gamma")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_gamma, param_name = "gamma") 
+tune_plot_logloss_gap(logloss_gap_gamma, param_name = "gamma") 
 
 
-##############################################################################################
-########   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MAX_DELTA_STEP   #######
-##############################################################################################
+#####################################################################################
+###   XGBOOST MODEL - DEFAULT HYPERPARAMETERS + EARLY STOPPING - MAX_DELTA_STEP   ###
+#####################################################################################
 
+# data to be used in the model
+str(metagen)
 
 ### run xgboost model
 param_grid_values <- c(0, 1, 2, 3, 4, 5)
@@ -1727,57 +1756,60 @@ all_results_max_delta_step <- tune_xgb_param(param_grid_name = "max_delta_step",
 
 
 ### summarize performance metrics
-# uses ouput of tune_xgb_param
-summarize_performance(all_results_max_delta_step)
+# uses output of tune_xgb_param
+tune_summarize_performance(all_results_max_delta_step)
 
 
 ### feature importance
 # combine feature importances
-# uses ouput of tune_xgb_param, creates the all_importances_df
-feature_import_max_delta_step <- combine_feature_importance(all_results_max_delta_step, param_name = "max_delta_step")
+# uses output of tune_xgb_param, creates the all_importances_df
+feature_import_max_delta_step <- tune_feature_importance(all_results_max_delta_step, param_name = "max_delta_step")
 feature_import_max_delta_step %>% arrange(desc(freq_selected))
 
 # plot specific feature by frequency across parameter values
 # uses the all_importances_df
-plot_feature_selection_frequency(feature_import_max_delta_step, feature = "Lachnoclostridium_sp._YL32", param_name = "max_delta_step")
+tune_plot_feature_selection_frequency(feature_import_max_delta_step, feature = "Lachnoclostridium_sp._YL32", param_name = "max_delta_step")
 
 # plot feature frequency importance (mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability(feature_import_max_delta_step, x = "freq_selected", y = "mean_gain", color_by = "max_delta_step")
-plot_feature_stability(feature_import_max_delta_step, x = "freq_selected", y = "mean_cover", color_by = "max_delta_step")
+tune_plot_feature_stability(feature_import_max_delta_step, x = "freq_selected", y = "mean_gain", color_by = "max_delta_step")
+tune_plot_feature_stability(feature_import_max_delta_step, x = "freq_selected", y = "mean_cover", color_by = "max_delta_step")
 
 # number of features selected in more than threshold_frac models
 # uses all_importances_df
-get_feature_stability_table(feature_import_max_delta_step, threshold_frac = 0.4, n_repeats = 10, param_name = "max_delta_step")
+tune_feature_stability_table(feature_import_max_delta_step, threshold_frac = 0.4, n_repeats = 10, param_name = "max_delta_step")
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency(feature_import_max_delta_step, param_name = "max_delta_step")
+tune_mean_feature_frequency(feature_import_max_delta_step, param_name = "max_delta_step")
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs and combine into one table
 # uses tune_xgb_param, creates logloss_df
-logloss_max_delta_step <- extract_logloss_df(all_results_max_delta_step, param_name = "max_delta_step")
+logloss_max_delta_step <- tune_extract_logloss_df(all_results_max_delta_step, param_name = "max_delta_step")
 
 # plot logloss over boosting rounds (type = "train", "test", or "both")
 # uses logloss_df
-plot_logloss_curve(logloss_max_delta_step, type = "test", show_mean = TRUE, param_name = "max_delta_step")
-plot_logloss_curve(logloss_max_delta_step, type = "train", show_mean = FALSE, param_name = "max_delta_step")
-plot_logloss_curve(logloss_max_delta_step, type = "both", show_mean = FALSE, param_name = "max_delta_step")
+tune_plot_logloss_curve(logloss_max_delta_step, type = "test", show_mean = TRUE, param_name = "max_delta_step")
+tune_plot_logloss_curve(logloss_max_delta_step, type = "train", show_mean = FALSE, param_name = "max_delta_step")
+tune_plot_logloss_curve(logloss_max_delta_step, type = "both", show_mean = FALSE, param_name = "max_delta_step")
 
 # calculate logloss gap (test loss - train loss) over boosting rounds
 # uses logloss_df, creates logloss_gap_df
-logloss_gap_max_delta_step <- prepare_logloss_gap(logloss_max_delta_step, param_name = "max_delta_step")
+logloss_gap_max_delta_step <- tune_logloss_gap(logloss_max_delta_step, param_name = "max_delta_step")
 
 # plot logloss gap
 # uses logloss_gap_df
-plot_logloss_gap(logloss_gap_max_delta_step, param_name = "max_delta_step") 
+tune_plot_logloss_gap(logloss_gap_max_delta_step, param_name = "max_delta_step") 
 
 
-###########################################################################################################
-########   XGBOOST LOGLOSS MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS WITHOUT PARALLELIZATON  #######
-###########################################################################################################
+##########################################################################################
+###   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS WITHOUT PARALLELIZATON  ###
+##########################################################################################
+
+# data to be used in the model
+str(metagen)
 
 scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                              colsample_bytree, colsample_bynode, gamma,
@@ -1857,7 +1889,7 @@ set.seed(1234)
 optObj <- bayesOpt(FUN = scoring_function,
                    bounds = bounds,
                    initPoints = 12,
-                   iters.n = 10,
+                   iters.n = 50,
                    acq = "ei",
                    parallel = FALSE,
                    verbose = 1)
@@ -1868,9 +1900,12 @@ head(optObj$scoreSummary[order(-Score), ])
 getBestPars(optObj)
 
 
-###################################################################################################################
-########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS - LOGLOSS  #######
-###################################################################################################################
+#################################################################################################
+###   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS   ###
+#################################################################################################
+
+# data to be used in the model
+str(metagen)
 
 library(future.apply) # allows parallel versions of *apply functions
 plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
@@ -1969,126 +2004,20 @@ optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, fea
                    verbose = 1)
 
 # view results
-stopstatus_cv_log = optObj$stopStatus
-scoresum_cv_log = optObj$scoreSummary[order(-Score), ]
-head(scoresum_cv_log)
-bestparams_cv_log = getBestPars(optObj)
+stopstatus = optObj$stopStatus
+score_sum = optObj$scoreSummary[order(-Score), ]
+head(optObj$scoreSummary[order(-Score), ])
+best_param_values = getBestPars(optObj)
 
 plan(sequential) # resets future plan to normal single-threaded execution
 
 
-###############################################################################################################
-########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF CV FOLDS - AUC  #######
-###############################################################################################################
+##################################################################################################
+###   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT   ###
+##################################################################################################
 
-library(future.apply) # allows parallel versions of *apply functions
-plan(multisession, workers = 5)  # each worker in a separate R session, one worker per 2 repeats
-
-# data and feat_cols explicitly passed so each worker has a complete copy of data (avoid scope issue in parallel execution)
-scoring_function <- function(eta, max_depth, min_child_weight, subsample,
-                             colsample_bytree, colsample_bynode, gamma,
-                             lambda, alpha, scale_pos_weight, max_delta_step,
-                             data, feat_cols) {
-  
-  # convert to DMatrix
-  dtrain <- xgb.DMatrix(data = as.matrix(data[, feat_cols]), 
-                        label = data$condition_numeric)
-  
-  params <- list(objective = "binary:logistic",
-                 eval_metric = "auc",
-                 eta = eta,
-                 max_depth = as.integer(max_depth), # integer
-                 min_child_weight = as.integer(min_child_weight), # integer
-                 subsample = subsample,
-                 colsample_bytree = colsample_bytree,
-                 colsample_bynode = colsample_bynode,
-                 gamma = gamma,
-                 lambda = lambda,
-                 alpha = alpha,
-                 scale_pos_weight = scale_pos_weight,
-                 max_delta_step = as.integer(max_delta_step)) # integer
-  
-  # number of repeats of stratified 5-fold cross-validation
-  repeats <- 10 
-  
-  # runs the anonymous function in parallel once per repeat, parallelized across the workers
-  # output collected by repeat_logloss
-  # data and feat_cols explicitly passed to each worker
-  repeat_auc <- future_sapply(1:repeats,
-                              function(r, data_local, feat_cols_local) {
-                                
-                                # gives each repeat a different random seed for fold generation (prevents identical scores and zero variance for Bayesian optimizaiton)
-                                set.seed(sample.int(1e6, 1))
-                                
-                                # create 5-folds for cross-validation
-                                folds <- caret::createFolds(data_local$condition, k = 5, list = TRUE, returnTrain = FALSE)
-                                
-                                # ensures that any xgboost error returns NULL instead of crashing
-                                xgb_cv <- tryCatch({
-                                  xgboost::xgb.cv(params = params,
-                                                  data = xgb.DMatrix(data = as.matrix(data_local[, feat_cols_local]), 
-                                                                     label = data_local$condition_numeric),
-                                                  nrounds = 5000,
-                                                  folds = folds,
-                                                  stratified = TRUE,
-                                                  showsd = FALSE,
-                                                  early_stopping_rounds = 50,
-                                                  verbose = 0)
-                                }, error = function(e) NULL)
-                                
-                                # replaces failures with a finite large number (prevents NA/Inf issues that will crash BayesOpt)
-                                if (is.null(xgb_cv)) return(0)
-                                
-                                # returns the best iteration of auc for the repeat
-                                xgb_cv$evaluation_log$test_auc_mean[xgb_cv$best_iteration]
-                              },
-                              
-                              future.seed = TRUE, # ensures random number generation is reproducible across parallel workers
-                              data_local = data,
-                              feat_cols_local = feat_cols) # pass dataset and feature columns from parent environment to each worker
-  
-  # average across repeats
-  mean_auc <- mean(repeat_auc)
-  
-  # return mean auc values
-  return(list(Score = mean_auc))
-}
-
-# define parameter bounds
-bounds <- list(eta = c(0.001, 0.02),
-               max_depth = c(2L, 6L), # integer
-               min_child_weight = c(1L, 2L), # integer
-               subsample = c(0.9, 1.0),
-               colsample_bytree = c(0.6, 1.0),
-               colsample_bynode = c(0.6, 1.0),
-               gamma = c(0, 4),
-               lambda = c(0, 10),
-               alpha = c(0, 4),
-               scale_pos_weight = c(0.3, 2.0),
-               max_delta_step = c(0L, 10L)) # integer
-
-# run Bayesian optimization sequentially, letting repeats run in parallel
-set.seed(1234) # reproducible search of initial points
-optObj <- bayesOpt(FUN = function(...) scoring_function(..., data = metagen, feat_cols = all_feat_cols), # wrapper to pass dataset and feature columns to scoring_fucntion
-                   bounds = bounds,
-                   initPoints = 22,
-                   iters.n = 50,
-                   acq = "ei",
-                   parallel = FALSE,
-                   verbose = 1)
-
-# view results
-stopstatus_cv_auc = optObj$stopStatus
-scoresum_cv_auc = optObj$scoreSummary[order(-Score), ]
-head(scoresum_cv_auc)
-bestparams_cv_auc = getBestPars(optObj)
-
-plan(sequential) # resets future plan to normal single-threaded execution
-
-
-####################################################################################################################
-########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT - LOGLOSS  #######
-####################################################################################################################
+# data to be used in the model
+str(metagen)
 
 scoring_function <- function(eta, max_depth, min_child_weight, subsample,
                              colsample_bytree, colsample_bynode, gamma,
@@ -2166,7 +2095,7 @@ bounds <- list(eta = c(0.001, 0.02),
 
 # resister back end
 # parallelize evaluations of the scoring function
-# each hyperparameter point being evaluated by Bayesain optimization can run on a separate core
+# each hyperparameter point being evaluated by Bayesian optimization can run on a separate core
 doParallel::registerDoParallel(parallel::detectCores() - 1)
 
 set.seed(1234)
@@ -2182,120 +2111,21 @@ optObj <- bayesOpt(FUN = scoring_function,
 registerDoSEQ() 
 
 # view results
-stopstatus_bo_log = optObj$stopStatus
-scoresum_bo_log = optObj$scoreSummary[order(-Score), ]
+stopstatus = optObj$stopStatus
+score_sum = optObj$scoreSummary[order(-Score), ]
 head(optObj$scoreSummary[order(-Score), ])
-bestparams_bo_log = getBestPars(optObj)
+best_param_values = getBestPars(optObj)
 
 
-################################################################################################################
-########   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT - AUC  #######
-################################################################################################################
+##############################################################################
+###   XGBOOST MODEL - EVALUATION OF MODEL WITH OPTIMIZED HYPERPARAMETERS   ###
+##############################################################################
 
-scoring_function <- function(eta, max_depth, min_child_weight, subsample,
-                             colsample_bytree, colsample_bynode, gamma,
-                             lambda, alpha, scale_pos_weight, max_delta_step) {
-  
-  set.seed(1234)
-  
-  # convert to DMatrix
-  dtrain <- xgb.DMatrix(data = as.matrix(metagen[, all_feat_cols]), 
-                        label = metagen$condition_numeric)
-  
-  params <- list(objective = "binary:logistic",
-                 eval_metric = "auc",
-                 eta = eta,
-                 max_depth = as.integer(max_depth),
-                 min_child_weight = as.integer(min_child_weight),
-                 subsample = subsample,
-                 colsample_bytree = colsample_bytree,
-                 colsample_bynode = colsample_bynode,
-                 gamma = gamma,
-                 lambda = lambda,
-                 alpha = alpha,
-                 scale_pos_weight = scale_pos_weight,
-                 max_delta_step = as.integer(max_delta_step))
-  
-  repeats <- 10
-  repeat_auc <- numeric(repeats)
-  
-  # loop over each repeat
-  for (r in 1:repeats) {
-    
-    #  create 5-folds for cross-validation (stratified on condition)
-    folds <- caret::createFolds(metagen$condition, k = 5, list = TRUE, returnTrain = FALSE)
-    
-    xgb_cv <- tryCatch({
-      xgboost::xgb.cv(
-        params = params,
-        data = dtrain,
-        nrounds = 5000,
-        folds = folds,
-        stratified = TRUE,
-        showsd = FALSE,
-        early_stopping_rounds = 50,
-        verbose = 0)
-    }, error = function(e) return(NULL))
-    
-    if (is.null(xgb_cv)) {
-      repeat_auc[r] <- 0
-    } else {
-      
-      # take the best iteration of auc for the repeat
-      repeat_auc[r] <- xgb_cv$evaluation_log$test_auc_mean[xgb_cv$best_iteration]
-    }
-  }
-  
-  # average across repeats
-  mean_auc <- mean(repeat_auc)
-  
-  # return mean auc values
-  return(list(Score = mean_auc))
-}
+# data to be used in the model
+str(metagen)
 
-# define parameter bounds
-bounds <- list(eta = c(0.001, 0.02),
-               max_depth = c(2L, 6L),
-               min_child_weight = c(1L, 2L),
-               subsample = c(0.9, 1.0),
-               colsample_bytree = c(0.6, 1.0),
-               colsample_bynode = c(0.6, 1.0),
-               gamma = c(0, 4),
-               lambda = c(0, 10),
-               alpha = c(0, 4),
-               scale_pos_weight = c(0.3, 2.0),
-               max_delta_step = c(0L, 10L))
-
-# resister back end
-# parallelize evaluations of the scoring function
-# each hyperparameter point being evaluated by Bayesain optimization can run on a separate core
-doParallel::registerDoParallel(parallel::detectCores() - 1)
-
-set.seed(1234)
-optObj <- bayesOpt(FUN = scoring_function,
-                   bounds = bounds,
-                   initPoints = 22,
-                   iters.n = 50,
-                   acq = "ei",
-                   parallel = TRUE,
-                   verbose = 1)
-
-# unregister the backend
-registerDoSEQ() 
-
-# view results
-stopstatus_bo_auc = optObj$stopStatus
-scoresum_bo_auc = optObj$scoreSummary[order(-Score), ]
-head(optObj$scoreSummary[order(-Score), ])
-bestparams_bo_auc = getBestPars(optObj)
-
-
-############################################################################################################
-########   XGBOOST MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS USING LOGLOSS - BO LOGLOSS  #######
-############################################################################################################
-
-### function to evaluate model using hyperparameter values
-final_xgb_evaluation <- function(best_params,
+### function to evaluate model using optimized hyperparameter values
+perf_xgb_evaluation <- function(best_params,
                                  metagen,
                                  all_feat_cols,
                                  target_var,
@@ -2450,20 +2280,20 @@ final_xgb_evaluation <- function(best_params,
   return(all_results)
 }
 
-# list of best hyperparameters to use (from 50 repeats of 5-fold cross-validation parallelized on the cv folds)
+# list of best hyperparameters to use
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = bestparams_bo_log$eta,
-                    scale_pos_weight = bestparams_bo_log$scale_pos_weight,
-                    max_depth = bestparams_bo_log$max_depth,
-                    min_child_weight = bestparams_bo_log$min_child_weight,
-                    subsample = bestparams_bo_log$subsample,
-                    colsample_bytree = bestparams_bo_log$colsample_bytree,
-                    colsample_bynode = bestparams_bo_log$colsample_bynode,
-                    lambda = bestparams_bo_log$lambda,
-                    alpha = bestparams_bo_log$alpha,
-                    gamma = bestparams_bo_log$alpha,
-                    max_delta_step = bestparams_bo_log$max_delta_step)
+                    eta = best_param_values$eta,
+                    scale_pos_weight = best_param_values$scale_pos_weight,
+                    max_depth = best_param_values$max_depth,
+                    min_child_weight = best_param_values$min_child_weight,
+                    subsample = best_param_values$subsample,
+                    colsample_bytree = best_param_values$colsample_bytree,
+                    colsample_bynode = best_param_values$colsample_bynode,
+                    lambda = best_param_values$lambda,
+                    alpha = best_param_values$alpha,
+                    gamma = best_param_values$gamma,
+                    max_delta_step = best_param_values$max_delta_step)
 
 # metagen = data.frame of all features and labels (samples = rows, features + labels = columns)
 metagen <- metagen
@@ -2479,81 +2309,81 @@ target_var_numeric <- "condition_numeric"
 
 
 ### run final evaluation
-final_results_log <- final_xgb_evaluation(best_params = best_params,
-                                          metagen = metagen,
-                                          all_feat_cols = all_feat_cols,
-                                          target_var = "condition",
-                                          target_var_numeric = "condition_numeric",
-                                          n_repeats = 50,
-                                          n_folds = 5)
-  
-### functions to analyze the output of final_xgb_evaluation
+perf_opt_params <- perf_xgb_evaluation(best_params = best_params,
+                                       metagen = metagen,
+                                       all_feat_cols = all_feat_cols,
+                                       target_var = "condition",
+                                       target_var_numeric = "condition_numeric",
+                                       n_repeats = 50,
+                                       n_folds = 5)
 
-### summarize performance metrics (same as for tune_xgb_param)
-# uses ouput of final_xgb_evaluation
+### functions to analyze the output of perf_xgb_evaluation
+
+### summarize performance metrics
+# uses output of perf_xgb_evaluation
 # mean and SD of balanced accuracy, f1, precision, sensitivity, specificity, auc, logloss, best nrounds
-summarize_performance <- function(results_list) {
+perf_summarize_performance <- function(results_list) {
   dplyr::bind_rows(lapply(results_list, `[[`, "summary"))
 }
-summarize_performance(final_results_log)
+perf_summarize_performance(perf_opt_params)
 
 
 ### feature importance (importance of features across parameter settings)
-# uses ouput of final_xgb_evaluation, creates the all_importances_df
-final_feature_importance <- function(results_list) {
+# uses output of perf_xgb_evaluation, creates the all_importances_df
+perf_feature_importance <- function(results_list) {
   purrr::imap_dfr(results_list, function(res, name) {
     df <- res$feature_importance
     return(df)
   })
 }
-feature_freq_final_log <- final_feature_importance(final_results_log)
-feature_freq_final_log
+feature_freq_opt_params <- perf_feature_importance(perf_opt_params)
+feature_freq_opt_params
 
 # plot feature frequency/selection by importance(mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability_final <- function(all_importances_df, x = "freq_selected", y = "mean_gain") {
+perf_plot_feature_stability <- function(all_importances_df, x = "freq_selected", y = "mean_gain") {
   ggplot(all_importances_df, aes(x = .data[[x]], y = .data[[y]])) +
     geom_point(alpha = 0.6, color = "blue") + theme_minimal() +
     labs(title = "Feature importance stability", x = x, y = y)
 } 
-plot_feature_stability_final(feature_freq_final_log, x = "freq_selected", y = "mean_gain")
-plot_feature_stability_final(feature_freq_final_log, x = "freq_selected", y = "mean_cover")
+perf_plot_feature_stability(feature_freq_opt_params, x = "freq_selected", y = "mean_gain")
+perf_plot_feature_stability(feature_freq_opt_params, x = "freq_selected", y = "mean_cover")
 
 # number of features selected in more than threshold_frac folds
 # uses all_importances_df
-get_feature_stability_table_final <- function(all_importances_df, threshold_frac = 0.4, n_repeats = 50) {
+perf_feature_stability_table <- function(all_importances_df, threshold_frac = 0.4, n_repeats = 50) {
   threshold <- threshold_frac * n_repeats * 5 # 5 folds per repeat
   all_importances_df %>%
     summarise(n_features_selected = sum(freq_selected >= threshold), .groups = "drop")
 }
-get_feature_stability_table_final(feature_freq_final_log, threshold_frac = 0.4, n_repeats = 50)
+perf_feature_stability_table(feature_freq_opt_params, threshold_frac = 0.4, n_repeats = 50)
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency_final <- function(all_importances_df) {
+perf_mean_feature_frequency <- function(all_importances_df) {
   all_importances_df %>%
     summarise(mean_frequency_selection = mean(freq_selected), .groups = "drop")
 }
-get_mean_feature_frequency_final(feature_freq_final_log)
+perf_mean_feature_frequency(feature_freq_opt_params)
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs (training/testing loss per boosting round)
-# uses output of final_xgb_evaluation, creates logloss_df
-extract_logloss_df_final <- function(results_list) {
+# uses output of perf_xgb_evaluation, creates logloss_df
+perf_extract_logloss_df <- function(results_list) {
   purrr::imap_dfr(results_list, function(res, name) {
     logs <- res$eval_logs
     df <- dplyr::bind_rows(logs, .id = "Fold")
     return(df)
   })
 }
-logloss_final_log <- extract_logloss_df_final(final_results_log)
-logloss_final_log
+logloss_opt_params <- perf_extract_logloss_df(perf_opt_params)
+logloss_opt_params
 
 # plot logloss
 # uses logloss_df
 # plots change of logloss over boosting rounds (type = "train", "test", or "both")
-plot_logloss_curve_final <- function(logloss_df, type = "test", show_mean = TRUE) {
+perf_plot_logloss_curve <- function(logloss_df, type = "test", show_mean = TRUE) {
   p <- ggplot(logloss_df, aes(x = iter))
   
   if (type == "test") {
@@ -2585,14 +2415,14 @@ plot_logloss_curve_final <- function(logloss_df, type = "test", show_mean = TRUE
   
   p + labs(title = "Logloss curves", x = "Boosting round", y = "Logloss")
 }
-plot_logloss_curve_final(logloss_final_log, type = "test", show_mean = TRUE)
-plot_logloss_curve_final(logloss_final_log, type = "train", show_mean = FALSE)
-plot_logloss_curve_final(logloss_final_log, type = "both", show_mean = FALSE)
+perf_plot_logloss_curve(logloss_opt_params, type = "test", show_mean = TRUE)
+perf_plot_logloss_curve(logloss_opt_params, type = "train", show_mean = FALSE)
+perf_plot_logloss_curve(logloss_opt_params, type = "both", show_mean = FALSE)
 
 # prepare logloss gap
 # uses logloss_df, creates logloss_gap_df
 # calculates the generalization gap (test loss - train loss) over boosting rounds
-prepare_logloss_gap_final <- function(logloss_df) {
+perf_prepare_logloss_gap <- function(logloss_df) {
   logloss_df %>%
     group_by(iter) %>%
     summarise(
@@ -2602,11 +2432,11 @@ prepare_logloss_gap_final <- function(logloss_df) {
       .groups = "drop"
     )
 }
-logloss_gap_final_log <- prepare_logloss_gap_final(logloss_final_log)
+logloss_gap_opt_params <- perf_prepare_logloss_gap(logloss_opt_params)
 
 # plot generalization gap (visually assess overfitting)
 # uses logloss_gap_df
-plot_logloss_gap_final <- function(logloss_gap_df) {
+perf_plot_logloss_gap <- function(logloss_gap_df) {
   ggplot(logloss_gap_df, aes(x = iter, y = gap)) +
     geom_line(color = "darkorange", linewidth = 1) +
     theme_minimal() +
@@ -2617,27 +2447,249 @@ plot_logloss_gap_final <- function(logloss_gap_df) {
     )
 }
 
-plot_logloss_gap_final(logloss_gap_final_log)
+perf_plot_logloss_gap(logloss_gap_opt_params)
 
 
-########################################################################################################
-########   XGBOOST MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS USING LOGLOSS - BO AUC  #######
-########################################################################################################
+##############################################################################
+###   XGBOOST LOGLOSS MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  ###
+##############################################################################
 
-# list of best hyperparameters 
+# data to be used in the model
+str(metagen)
+
+# optimum number of nrounds chosen during final evaluation
+best_nrounds <- round(mean(unlist(perf_opt_params$final_evaluation$best_nrounds)))
+
+# best hyperparameter values determined by Bayesian optimization
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = bestparams_bo_auc$eta,
-                    scale_pos_weight = bestparams_bo_auc$scale_pos_weight,
-                    max_depth = bestparams_bo_auc$max_depth,
-                    min_child_weight = bestparams_bo_auc$min_child_weight,
-                    subsample = bestparams_bo_auc$subsample,
-                    colsample_bytree = bestparams_bo_auc$colsample_bytree,
-                    colsample_bynode = bestparams_bo_auc$colsample_bynode,
-                    lambda = bestparams_bo_auc$lambda,
-                    alpha = bestparams_bo_auc$alpha,
-                    gamma = bestparams_bo_auc$alpha,
-                    max_delta_step = bestparams_bo_auc$max_delta_step)
+                    eta = best_param_values$eta,
+                    scale_pos_weight = best_param_values$scale_pos_weight,
+                    max_depth = best_param_values$max_depth,
+                    min_child_weight = best_param_values$min_child_weight,
+                    subsample = best_param_values$subsample,
+                    colsample_bytree = best_param_values$colsample_bytree,
+                    colsample_bynode = best_param_values$colsample_bynode,
+                    lambda = best_param_values$lambda,
+                    alpha = best_param_values$alpha,
+                    gamma = best_param_values$gamma,
+                    max_delta_step = best_param_values$max_delta_step)
+
+# train the model on the full dataset
+dtrain_full <- xgboost::xgb.DMatrix(data = as.matrix(metagen[, all_feat_cols]),
+                                    label = metagen$condition_numeric)
+
+final_model <- xgboost::xgb.train(params = best_params,
+                                  data = dtrain_full,
+                                  nrounds = best_nrounds,
+                                  verbose = 1)
+
+
+#####################################################################
+########   XGBOOST MODEL - FEATURE SELECTION USING TREE SHAP  #######
+#####################################################################
+
+# data to be used in the model
+str(metagen)
+
+### function to evaluate model and determine SHAP values using optimal hyperparameter values
+xgb_shap_evaluation <- function(best_params,
+                                metagen,
+                                all_feat_cols,
+                                target_var,
+                                target_var_numeric,
+                                n_repeats = 50,
+                                n_folds = 5) {
+  
+  # set seed for reproducibility
+  set.seed(1234)
+  
+  # lists to store all results (metrics, feature importance, best nrounds, eval_logs, SHAP values)
+  all_results <- list()
+  
+  # create lists to store results 
+  xgb_metrics <- list()
+  xgb_importances <- list()
+  best_nrounds_list <- list()
+  eval_logs <- list()
+  shap_values <- list()
+  
+  # n_repeats of n_folds cross-validation
+  for (r in 1:n_repeats) {
+    cat("Repeat:", r, "\n")
+    
+    # different seed per repeat to get different folds
+    set.seed(1234 + r)
+    folds <- caret::createFolds(metagen[[target_var]], k = n_folds, list = TRUE, returnTrain = FALSE)
+    
+    # loop over each cross-validation fold
+    for (key in names(folds)) {
+      
+      # splits the dataset into training and testing sets for the current fold
+      test_idx <- folds[[key]] 
+      test_data <- metagen[test_idx, ]
+      train_data <- metagen[-test_idx, ]
+      
+      
+      # convert to DMatrix
+      dtrain <- xgboost::xgb.DMatrix(data = as.matrix(train_data[, all_feat_cols]), 
+                                     label = train_data[[target_var_numeric]])
+      dtest <- xgboost::xgb.DMatrix(data = as.matrix(test_data[, all_feat_cols]), 
+                                    label = test_data[[target_var_numeric]])
+      
+      # run internal 5-fold cross-validation to determine best nrounds
+      xgb_cv <- xgboost::xgb.cv(data = dtrain,
+                                params = best_params,
+                                nrounds = 5000,
+                                nfold = 5,
+                                early_stopping_rounds = 50,
+                                maximize = FALSE,
+                                stratified = TRUE,
+                                showsd = FALSE,
+                                verbose = 0)
+      
+      # best number of boosting rounds found by the internal 5-fold cross-validation above
+      best_nrounds <- xgb_cv$best_iteration
+      
+      # store evaluation_log from xgb.cv()
+      eval_log <- xgb_cv$evaluation_log
+      eval_log$fold_id <- key
+      eval_logs[[paste0("R", r, "_F", key)]] <- eval_log
+      
+      # train final model on training data using best nrounds
+      xgb_model <- xgboost::xgboost(data = dtrain,
+                                    params = best_params,
+                                    nrounds = best_nrounds,
+                                    verbose = 0)
+      
+      # evaluate on test set
+      preds_prob <- predict(xgb_model, dtest)
+      preds_label <- ifelse(preds_prob > 0.5, "disease", "healthy")
+      preds_label <- factor(preds_label, levels = c("healthy", "disease"))
+      
+      # calculate AUC
+      auc_val <- pROC::auc(response = test_data[[target_var]],
+                           predictor = preds_prob,
+                           levels = c("healthy", "disease"),
+                           direction = "<")
+      
+      # generate confusion matrix
+      cm <- caret::confusionMatrix(preds_label, test_data[[target_var]], positive = "disease")
+      
+      # calculate logloss
+      eps <- 1e-15 # avoid log(0)
+      prob_clipped <- pmin(pmax(preds_prob, eps), 1 - eps)
+      logloss <- -mean(test_data[[target_var_numeric]] * log(prob_clipped) +
+                         (1 - test_data[[target_var_numeric]]) * log(1 - prob_clipped))
+      
+      # SHAP value computation on test set (per fold)
+      shap_contrib <- predict(xgb_model, dtest, predcontrib = TRUE)
+      shap_values_nobias <- shap_contrib[, -ncol(shap_contrib), drop = FALSE] # remove bias term
+      rownames(shap_values_nobias) <- rownames(test_data) # add rownames
+      
+      # store performance metrics, importance, best_nrounds, logloss and SHAP values
+      xgb_metrics[[paste0("R", r, "_F", key)]] <- list(cm = cm, auc = auc_val, logloss = logloss)
+      imp <- xgboost::xgb.importance(feature_names = all_feat_cols, model = xgb_model)
+      imp$Repeat_Fold <- paste0("R", r, "_F", key)
+      xgb_importances[[paste0("R", r, "_F", key)]] <- imp
+      best_nrounds_list[[paste0("R", r, "_F", key)]] <- best_nrounds
+      shap_values[[paste0("R", r, "_F", key)]] <- shap_values_nobias
+    }
+  }
+  
+  ### summarize performance metrics
+  # create vectors to store metrics
+  balanced_accuracy <- f1_score <- precision <- sensitivity <- specificity <- auc_values <- logloss_values <- numeric()
+  nrounds_values <- unlist(best_nrounds_list)
+  
+  # loop through stored lists to extract metrics
+  for (key in names(xgb_metrics)) {
+    cm <- xgb_metrics[[key]]$cm
+    auc_val <- xgb_metrics[[key]]$auc
+    logloss_val <- xgb_metrics[[key]]$logloss
+    
+    balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+    f1_score <- c(f1_score, cm$byClass["F1"])
+    precision <- c(precision, cm$byClass["Precision"])
+    sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+    specificity <- c(specificity, cm$byClass["Specificity"])
+    auc_values <- c(auc_values, auc_val)
+    logloss_values <- c(logloss_values, logloss_val)
+  }
+  
+  # aggregate stored metrics into a data.frame
+  summary_df <- data.frame(mean_bal_acc = mean(balanced_accuracy, na.rm = TRUE),
+                           sd_bal_acc = sd(balanced_accuracy, na.rm = TRUE),
+                           mean_f1 = mean(f1_score, na.rm = TRUE),
+                           sd_f1 = sd(f1_score, na.rm = TRUE),
+                           mean_precision = mean(precision, na.rm = TRUE),
+                           sd_precision = sd(precision, na.rm = TRUE),
+                           mean_sens = mean(sensitivity, na.rm = TRUE),
+                           sd_sens = sd(sensitivity, na.rm = TRUE),
+                           mean_spec = mean(specificity, na.rm = TRUE),
+                           sd_spec = sd(specificity, na.rm = TRUE),
+                           mean_auc = mean(auc_values, na.rm = TRUE),
+                           sd_auc = sd(auc_values, na.rm = TRUE),
+                           mean_logloss = mean(logloss_values, na.rm = TRUE),
+                           sd_logloss = sd(logloss_values, na.rm = TRUE),
+                           mean_nrounds = mean(nrounds_values, na.rm = TRUE),
+                           sd_nrounds = sd(nrounds_values, na.rm = TRUE))
+  
+  # aggregate feature importances
+  all_importances <- dplyr::bind_rows(xgb_importances)
+  mean_importance <- all_importances %>%
+    dplyr::group_by(Feature = Feature) %>%
+    dplyr::summarise(mean_gain = mean(Gain, na.rm = TRUE),
+                     mean_cover = mean(Cover, na.rm = TRUE),
+                     mean_freq = mean(Frequency, na.rm = TRUE),
+                     freq_selected = dplyr::n()) %>%
+    dplyr::arrange(desc(mean_gain))
+  
+  # SHAP value aggregation by repeat
+  repeat_ids <- sapply(names(shap_values), function(x) sub("_F.*", "", x))
+  shap_by_repeat <- split(shap_values, repeat_ids) # extract repeat ID from names
+  
+  # compute mean abs SHAP per feature per repeat
+  shap_metrics <- list()
+  
+  for (r in names(shap_by_repeat)) {
+    fold_shaps <- shap_by_repeat[[r]]
+    combined_matrix <- do.call(rbind, fold_shaps)
+    mean_abs_shap <- colMeans(abs(combined_matrix), na.rm = TRUE) # mean abs value for feature selection (not for understanding model)
+    selected_feats <- mean_abs_shap[mean_abs_shap > 0] # keep only shap values > 0
+    
+    # store as data.frame
+    shap_df <- data.frame(feature = names(selected_feats),
+                          mean_abs_shap = selected_feats,
+                          nrepeat = r)
+    shap_metrics[[r]] <- shap_df
+  }
+  
+  # store all values under current param value name
+  all_results[["final_evaluation"]] <- list(summary = summary_df,
+                                            feature_importance = mean_importance,
+                                            raw_metrics = xgb_metrics,
+                                            best_nrounds = best_nrounds_list,
+                                            eval_logs = eval_logs,
+                                            shap_metrics = shap_metrics)
+  
+  return(all_results)
+}
+
+# list of best hyperparameters to use (from 50 repeats of 5-fold cross-validation parallelized on the cv folds)
+best_params <- list(objective = "binary:logistic",
+                    eval_metric = "logloss",
+                    eta = best_param_values$eta,
+                    scale_pos_weight = best_param_values$scale_pos_weight,
+                    max_depth = best_param_values$max_depth,
+                    min_child_weight = best_param_values$min_child_weight,
+                    subsample = best_param_values$subsample,
+                    colsample_bytree = best_param_values$colsample_bytree,
+                    colsample_bynode = best_param_values$colsample_bynode,
+                    lambda = best_param_values$lambda,
+                    alpha = best_param_values$alpha,
+                    gamma = best_param_values$gamma,
+                    max_delta_step = best_param_values$max_delta_step)
 
 # metagen = data.frame of all features and labels (samples = rows, features + labels = columns)
 metagen <- metagen
@@ -2651,90 +2703,420 @@ target_var <- "condition"
 # the label/variable as a numeric (e.g., metagen$condition_numeric <- as.numeric(metagen$condition) - 1)
 target_var_numeric <- "condition_numeric"
 
-### evaluate model using hyperparameter values determined using Bayesian optimization (AUC)
-final_results_auc <- final_xgb_evaluation(best_params = best_params,
-                                          metagen = metagen,
-                                          all_feat_cols = all_feat_cols,
-                                          target_var = "condition",
-                                          target_var_numeric = "condition_numeric",
-                                          n_repeats = 50,
-                                          n_folds = 5)
 
-### functions to analyze the output of final_xgb_evaluation
+### run model evaluation and computation of SHAP values
+shap_feature_selection <- xgb_shap_evaluation(best_params = best_params,
+                                              metagen = metagen,
+                                              all_feat_cols = all_feat_cols,
+                                              target_var = "condition",
+                                              target_var_numeric = "condition_numeric",
+                                              n_repeats = 50,
+                                              n_folds = 5)
+
+### functions to analyze the output of xgb_shap_evaluation
 
 ### summarize performance metrics
-# uses ouput of final_xgb_evaluation
+# uses output of xgb_shap_evaluation
 # mean and SD of balanced accuracy, f1, precision, sensitivity, specificity, auc, logloss, best nrounds
-summarize_performance(final_results_auc)
+perf_summarize_performance(shap_feature_selection)
 
 
 ### feature importance (importance of features across parameter settings)
-# uses output of final_xgb_evaluation, creates the all_importances_df
-feature_freq_final_auc <- final_feature_importance(final_results_auc)
-feature_freq_final_auc
+# uses output of xgb_shap_evaluation, creates the all_importances_df
+feature_freq_opt_params <- perf_feature_importance(shap_feature_selection)
+feature_freq_opt_params
 
 # plot feature frequency/selection by importance(mean gain or mean cover)
 # uses the all_importances_df
-plot_feature_stability_final(feature_freq_final_auc, x = "freq_selected", y = "mean_gain")
-plot_feature_stability_final(feature_freq_final_auc, x = "freq_selected", y = "mean_cover")
+perf_plot_feature_stability(feature_freq_opt_params, x = "freq_selected", y = "mean_gain")
+perf_plot_feature_stability(feature_freq_opt_params, x = "freq_selected", y = "mean_cover")
 
 # number of features selected in more than threshold_frac folds
 # uses all_importances_df
-get_feature_stability_table_final(feature_freq_final_auc, threshold_frac = 0.4, n_repeats = 50)
+perf_feature_stability_table(feature_freq_opt_params, threshold_frac = 0.4, n_repeats = 50)
 
 # mean frequency of feature selection per parameter value
 # uses all_importances_df
-get_mean_feature_frequency_final(feature_freq_final_auc)
+perf_mean_feature_frequency(feature_freq_opt_params)
 
 
 ### logloss and overfitting analysis
 # extract evaluation_logs (training/testing loss per boosting round)
-# uses output of final_xgb_evaluation, creates logloss_df
-logloss_final_auc <- extract_logloss_df_final(final_results_auc)
-logloss_final_auc
+# uses output of xgb_shap_evaluation, creates logloss_df
+logloss_opt_params <- perf_extract_logloss_df(shap_feature_selection)
+logloss_opt_params
 
 # plot logloss
 # uses logloss_df
 # plots change of logloss over boosting rounds (type = "train", "test", or "both")
-plot_logloss_curve_final(logloss_final_auc, type = "test", show_mean = TRUE)
-plot_logloss_curve_final(logloss_final_auc, type = "train", show_mean = FALSE)
-plot_logloss_curve_final(logloss_final_auc, type = "both", show_mean = FALSE)
+perf_plot_logloss_curve(logloss_opt_params, type = "test", show_mean = TRUE)
+perf_plot_logloss_curve(logloss_opt_params, type = "train", show_mean = FALSE)
+perf_plot_logloss_curve(logloss_opt_params, type = "both", show_mean = FALSE)
 
 # prepare logloss gap
 # uses logloss_df, creates logloss_gap_df
 # calculates the generalization gap (test loss - train loss) over boosting rounds
-logloss_gap_final_auc <- prepare_logloss_gap_final(logloss_final_auc)
+logloss_gap_opt_params <- perf_prepare_logloss_gap(logloss_opt_params)
 
 # plot generalization gap (visually assess overfitting)
 # uses logloss_gap_df
-plot_logloss_gap_final(logloss_gap_final_auc)
+perf_plot_logloss_gap(logloss_gap_opt_params)
 
 
-#######################################################################################
-########   XGBOOST LOGLOSS MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  #######
-#######################################################################################
+### analyze SHAP feature values and frequency of selection (similar to Boruta)
+# aggregate median importance of SHAP values
+shap_df <- do.call(rbind, shap_feature_selection$final_evaluation$shap_metrics)
+
+# summarize across repeats
+summary_shap_df <- shap_df %>%
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_meanSHAP = mean(mean_abs_shap, na.rm = TRUE),
+                   sd_meanSHAP = sd(mean_abs_shap, na.rm = TRUE),
+                   count = n()) %>%
+  arrange(desc(mean_meanSHAP)) 
+
+  
+### plot frequency of selection and SHAP values of features
+n_repeats <- 50 # number of repeats used in function
+
+# plot selection frequency of features
+ggplot(summary_shap_df, aes(x = reorder(feature, count), y = count)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
+  labs(title = "Feature selection frequency across repeats",
+       x = "Feature", y = paste("Number of runs selected (out of", n_repeats, ")"))  
+
+
+# plot average mean SHAP values for features
+summary_shap_df$frequency <- ifelse(summary_shap_df$count >= n_repeats*0.98, "in_atleast_98%", "other") # add column: in all repeats or not
+
+# plot features selected in half of repeats and highlight features selected in all repeats
+ggplot(summary_shap_df[summary_shap_df$count >= n_repeats*0.8, ], 
+       aes(x = reorder(feature, mean_meanSHAP), y = mean_meanSHAP, fill = frequency)) +
+  scale_fill_manual(values = c("in_atleast_98%" = "indianred3", "other" = "steelblue")) +
+  geom_col() + coord_flip() + theme_minimal(base_size = 12) +
+  labs(title = "Average mean SHAP value of features",
+       x = "Feature", y = "Average mean SHAP value", fill = "Feature selection frequency")
+
+
+### features to keep
+selected_features_df <- summary_shap_df %>% 
+  filter(count >= n_repeats*0.98) %>% # frequency of feature selection
+  head(11) # top mean_meanSHAP (tibble arranged by mean_meanSHAP)
+
+selected_features <- selected_features_df$feature # features to keep
+
+# subset metagen to just confirmed features
+shap_metagen_df <- metagen[, c("condition", "condition_numeric", selected_features)]
+str(shap_metagen_df)
+
+
+##############################################################################################################
+########   XGBOOST MODEL - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS USING SHAP-SELECTED FEATURES  #######
+##############################################################################################################
+
+# list of best hyperparameters (determined using bayesian oprimzation on the full dataset)
+best_params <- list(objective = "binary:logistic",
+                    eval_metric = "logloss",
+                    eta = best_param_values$eta,
+                    scale_pos_weight = best_param_values$scale_pos_weight,
+                    max_depth = best_param_values$max_depth,
+                    min_child_weight = best_param_values$min_child_weight,
+                    subsample = best_param_values$subsample,
+                    colsample_bytree = best_param_values$colsample_bytree,
+                    colsample_bynode = best_param_values$colsample_bynode,
+                    lambda = best_param_values$lambda,
+                    alpha = best_param_values$alpha,
+                    gamma = best_param_values$gamma,
+                    max_delta_step = best_param_values$max_delta_step)
+
+# data to be used in the model
+str(shap_metagen_df)
+
+# set predictor columns
+subset_feat_cols <- setdiff(colnames(shap_metagen_df), c("condition", "condition_numeric"))
+
+### evaluate model using hyperparameter values determined using Bayesian optimization
+subset_performance <- perf_xgb_evaluation(best_params = best_params,
+                                           metagen = shap_metagen_df, # subset based on selected features
+                                           all_feat_cols = subset_feat_cols,
+                                           target_var = "condition",
+                                           target_var_numeric = "condition_numeric",
+                                           n_repeats = 50,
+                                           n_folds = 5)
+
+### functions to analyze the output of perf_xgb_evaluation
+
+### summarize performance metrics
+# uses output of perf_xgb_evaluation
+# mean and SD of balanced accuracy, f1, precision, sensitivity, specificity, auc, logloss, best nrounds
+perf_summarize_performance(subset_performance)
+
+
+### feature importance (importance of features across parameter settings)
+# uses output of perf_xgb_evaluation, creates the all_importances_df
+feature_freq_subset <- perf_feature_importance(subset_performance)
+feature_freq_subset
+
+# plot feature frequency/selection by importance(mean gain or mean cover)
+# uses the all_importances_df
+perf_plot_feature_stability(feature_freq_subset, x = "freq_selected", y = "mean_gain")
+perf_plot_feature_stability(feature_freq_subset, x = "freq_selected", y = "mean_cover")
+
+# number of features selected in more than threshold_frac folds
+# uses all_importances_df
+perf_feature_stability_table(feature_freq_subset, threshold_frac = 0.4, n_repeats = 50)
+
+# mean frequency of feature selection per parameter value
+# uses all_importances_df
+perf_mean_feature_frequency(feature_freq_subset)
+
+
+### logloss and overfitting analysis
+# extract evaluation_logs (training/testing loss per boosting round)
+# uses output of perf_xgb_evaluation, creates logloss_df
+logloss_subset <- perf_extract_logloss_df(subset_performance)
+logloss_subset
+
+# plot logloss
+# uses logloss_df
+# plots change of logloss over boosting rounds (type = "train", "test", or "both")
+perf_plot_logloss_curve(logloss_subset, type = "test", show_mean = TRUE)
+perf_plot_logloss_curve(logloss_subset, type = "train", show_mean = FALSE)
+perf_plot_logloss_curve(logloss_subset, type = "both", show_mean = FALSE)
+
+# prepare logloss gap
+# uses logloss_df, creates logloss_gap_df
+# calculates the generalization gap (test loss - train loss) over boosting rounds
+logloss_gap_subset <- perf_prepare_logloss_gap(logloss_subset)
+
+# plot generalization gap (visually assess overfitting)
+# uses logloss_gap_df
+perf_plot_logloss_gap(logloss_gap_subset)
+
+
+#################################################################################################################
+###   XGBOOST MODEL - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT + SHAP FEATURES  ###
+#################################################################################################################
+
+# data to be used in the model
+str(shap_metagen_df)
+
+# set predictor columns
+subset_feat_cols <- setdiff(colnames(shap_metagen_df), c("condition", "condition_numeric"))
+
+scoring_function <- function(eta, max_depth, min_child_weight, subsample,
+                             colsample_bytree, colsample_bynode, gamma,
+                             lambda, alpha, scale_pos_weight, max_delta_step) {
+  
+  set.seed(1234)
+  
+  # convert to DMatrix
+  dtrain <- xgb.DMatrix(data = as.matrix(shap_metagen_df[, subset_feat_cols]), 
+                        label = shap_metagen_df$condition_numeric)
+  
+  params <- list(objective = "binary:logistic",
+                 eval_metric = "logloss",
+                 eta = eta,
+                 max_depth = as.integer(max_depth),
+                 min_child_weight = as.integer(min_child_weight),
+                 subsample = subsample,
+                 colsample_bytree = colsample_bytree,
+                 colsample_bynode = colsample_bynode,
+                 gamma = gamma,
+                 lambda = lambda,
+                 alpha = alpha,
+                 scale_pos_weight = scale_pos_weight,
+                 max_delta_step = as.integer(max_delta_step))
+  
+  repeats <- 10
+  repeat_logloss <- numeric(repeats)
+  
+  # loop over each repeat
+  for (r in 1:repeats) {
+    
+    #  create 5-folds for cross-validation (stratified on condition)
+    folds <- caret::createFolds(shap_metagen_df$condition, k = 5, list = TRUE, returnTrain = FALSE)
+    
+    xgb_cv <- tryCatch({
+      xgboost::xgb.cv(
+        params = params,
+        data = dtrain,
+        nrounds = 5000,
+        folds = folds,
+        stratified = TRUE,
+        showsd = FALSE,
+        early_stopping_rounds = 50,
+        verbose = 0)
+    }, error = function(e) return(NULL))
+    
+    if (is.null(xgb_cv)) {
+      repeat_logloss[r] <- Inf
+    } else {
+      
+      # take the best iteration of logloss for the repeat
+      repeat_logloss[r] <- xgb_cv$evaluation_log$test_logloss_mean[xgb_cv$best_iteration]
+    }
+  }
+  
+  # average across repeats
+  mean_logloss <- mean(repeat_logloss)
+  
+  # negative because Bayesian optimization maximizes the Score
+  return(list(Score = -mean_logloss))
+}
+
+# define parameter bounds
+bounds <- list(eta = c(0.001, 0.02),
+               max_depth = c(2L, 6L),
+               min_child_weight = c(1L, 2L),
+               subsample = c(0.9, 1.0),
+               colsample_bytree = c(0.6, 1.0),
+               colsample_bynode = c(0.6, 1.0),
+               gamma = c(0, 4),
+               lambda = c(0, 10),
+               alpha = c(0, 4),
+               scale_pos_weight = c(0.3, 2.0),
+               max_delta_step = c(0L, 10L))
+
+# resister back end
+# parallelize evaluations of the scoring function
+# each hyperparameter point being evaluated by Bayesian optimization can run on a separate core
+doParallel::registerDoParallel(parallel::detectCores() - 1)
+
+set.seed(1234)
+optObj <- bayesOpt(FUN = scoring_function,
+                   bounds = bounds,
+                   initPoints = 22,
+                   iters.n = 50,
+                   acq = "ei",
+                   parallel = TRUE,
+                   verbose = 1)
+
+# unregister the backend
+registerDoSEQ() 
+
+# view results
+stopstatus = optObj$stopStatus
+score_sum = optObj$scoreSummary[order(-Score), ]
+head(optObj$scoreSummary[order(-Score), ])
+best_param_shap_feat_values = getBestPars(optObj)
+
+
+####################################################################################################################
+###   XGBOOST MODEL - EVALUATION OF MODEL WITH HYPERPARAMETERS DETERMINED DATA SUBSET ON SHAP-SELECTED FEATURES  ###
+####################################################################################################################
+
+# list of best hyperparameters (determined using bayesian oprimzation on the full dataset)
+best_params <- list(objective = "binary:logistic",
+                    eval_metric = "logloss",
+                    eta = best_param_shap_feat_values$eta,
+                    scale_pos_weight = best_param_shap_feat_values$scale_pos_weight,
+                    max_depth = best_param_shap_feat_values$max_depth,
+                    min_child_weight = best_param_shap_feat_values$min_child_weight,
+                    subsample = best_param_shap_feat_values$subsample,
+                    colsample_bytree = best_param_shap_feat_values$colsample_bytree,
+                    colsample_bynode = best_param_shap_feat_values$colsample_bynode,
+                    lambda = best_param_shap_feat_values$lambda,
+                    alpha = best_param_shap_feat_values$alpha,
+                    gamma = best_param_shap_feat_values$gamma,
+                    max_delta_step = best_param_shap_feat_values$max_delta_step)
+
+# data to be used in the model
+str(shap_metagen_df)
+
+# set predictor columns
+subset_feat_cols <- setdiff(colnames(shap_metagen_df), c("condition", "condition_numeric"))
+
+### evaluate model using hyperparameter values determined using Bayesian optimization
+subset_params_performance <- perf_xgb_evaluation(best_params = best_params,
+                                                 metagen = shap_metagen_df, # subset based on selected features
+                                                 all_feat_cols = subset_feat_cols,
+                                                 target_var = "condition",
+                                                 target_var_numeric = "condition_numeric",
+                                                 n_repeats = 50,
+                                                 n_folds = 5)
+
+### functions to analyze the output of perf_xgb_evaluation
+
+### summarize performance metrics
+# uses output of perf_xgb_evaluation
+# mean and SD of balanced accuracy, f1, precision, sensitivity, specificity, auc, logloss, best nrounds
+perf_summarize_performance(subset_params_performance)
+
+
+### feature importance (importance of features across parameter settings)
+# uses output of perf_xgb_evaluation, creates the all_importances_df
+feature_freq_subset <- perf_feature_importance(subset_params_performance)
+feature_freq_subset
+
+# plot feature frequency/selection by importance(mean gain or mean cover)
+# uses the all_importances_df
+perf_plot_feature_stability(feature_freq_subset, x = "freq_selected", y = "mean_gain")
+perf_plot_feature_stability(feature_freq_subset, x = "freq_selected", y = "mean_cover")
+
+# number of features selected in more than threshold_frac folds
+# uses all_importances_df
+perf_feature_stability_table(feature_freq_subset, threshold_frac = 0.4, n_repeats = 50)
+
+# mean frequency of feature selection per parameter value
+# uses all_importances_df
+perf_mean_feature_frequency(feature_freq_subset)
+
+
+### logloss and overfitting analysis
+# extract evaluation_logs (training/testing loss per boosting round)
+# uses output of perf_xgb_evaluation, creates logloss_df
+logloss_subset <- perf_extract_logloss_df(subset_params_performance)
+logloss_subset
+
+# plot logloss
+# uses logloss_df
+# plots change of logloss over boosting rounds (type = "train", "test", or "both")
+perf_plot_logloss_curve(logloss_subset, type = "test", show_mean = TRUE)
+perf_plot_logloss_curve(logloss_subset, type = "train", show_mean = FALSE)
+perf_plot_logloss_curve(logloss_subset, type = "both", show_mean = FALSE)
+
+# prepare logloss gap
+# uses logloss_df, creates logloss_gap_df
+# calculates the generalization gap (test loss - train loss) over boosting rounds
+logloss_gap_subset <- perf_prepare_logloss_gap(logloss_subset)
+
+# plot generalization gap (visually assess overfitting)
+# uses logloss_gap_df
+perf_plot_logloss_gap(logloss_gap_subset)
+
+
+###################################################################################################
+###   XGBOOST LOGLOSS MODEL - TRAIN FINAL MODEL WITH SHAP SUBSET DATA AND BEST HYPERPARAMETERS  ###
+###################################################################################################
+
+# data to be used in the model
+str(shap_metagen_df)
+
+# set predictor columns
+subset_feat_cols <- setdiff(colnames(shap_metagen_df), c("condition", "condition_numeric"))
+
+# optimum number of nrounds chosen during final evaluation
+best_nrounds <- round(mean(unlist(subset_params_performance$final_evaluation$best_nrounds)))
 
 # best hyperparameter values determined by Bayesian optimization
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = bestparams_bo_auc$eta,
-                    scale_pos_weight = bestparams_bo_auc$scale_pos_weight,
-                    max_depth = bestparams_bo_auc$max_depth,
-                    min_child_weight = bestparams_bo_auc$min_child_weight,
-                    subsample = bestparams_bo_auc$subsample,
-                    colsample_bytree = bestparams_bo_auc$colsample_bytree,
-                    colsample_bynode = bestparams_bo_auc$colsample_bynode,
-                    lambda = bestparams_bo_auc$lambda,
-                    alpha = bestparams_bo_auc$alpha,
-                    gamma = bestparams_bo_auc$alpha,
-                    max_delta_step = bestparams_bo_auc$max_delta_step)
-
-# optimum number of nrounds chosen during final evaluation
-best_nrounds <- round(mean(unlist(final_results$final_evaluation$best_nrounds)))
+                    eta = best_param_shap_feat_values$eta,
+                    scale_pos_weight = best_param_shap_feat_values$scale_pos_weight,
+                    max_depth = best_param_shap_feat_values$max_depth,
+                    min_child_weight = best_param_shap_feat_values$min_child_weight,
+                    subsample = best_param_shap_feat_values$subsample,
+                    colsample_bytree = best_param_shap_feat_values$colsample_bytree,
+                    colsample_bynode = best_param_shap_feat_values$colsample_bynode,
+                    lambda = best_param_shap_feat_values$lambda,
+                    alpha = best_param_shap_feat_values$alpha,
+                    gamma = best_param_shap_feat_values$gamma,
+                    max_delta_step = best_param_shap_feat_values$max_delta_step)
 
 # train the model on the full dataset
-dtrain_full <- xgboost::xgb.DMatrix(data = as.matrix(metagen[, all_feat_cols]),
-                                    label = metagen$condition_numeric)
+dtrain_full <- xgboost::xgb.DMatrix(data = as.matrix(shap_metagen_df[, subset_feat_cols]),
+                                    label = shap_metagen_df$condition_numeric)
 
 final_model <- xgboost::xgb.train(params = best_params,
                                   data = dtrain_full,
@@ -2742,205 +3124,208 @@ final_model <- xgboost::xgb.train(params = best_params,
                                   verbose = 1)
 
 
-##########################################################################################
-########   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  #######
-##########################################################################################
+#################################################################################
+###   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
+#################################################################################
 
 # compute tree SHAP values
-shap_values <- predict(final_model,
-                       newdata = dtrain_full,
-                       predcontrib = TRUE)
-
-dim(shap_values) # one row per sample, one column per feature + bias term (initial logit)
-shap_summary <- as.data.frame(shap_values)
-shap_summary$BIAS <- NULL  # remove bias term
-
-# mean absolute SHAP value per feature
-shap_mean_abs <- sort(colMeans(abs(shap_summary)), decreasing = TRUE)
-shap_mean_abs[1:20]
-
-shap_mean_abs <- as.data.frame(shap_mean_abs) # covert to data.frame
-shap_mean_abs$feature <- rownames(shap_mean_abs)
+shap_values <- predict(final_model, newdata = dtrain_full, predcontrib = TRUE)
+shap_df <- as.data.frame(shap_values)
+shap_df$BIAS <- NULL  # remove bias term
 
 
-# SHAP plots with SHAPforxgboost
-library(SHAPforxgboost)
-shap_long <- shap.prep(xgb_model = final_model, X_train = as.matrix(metagen[, all_feat_cols]))
+### SHAP summary plot
+shap_long <- shap.prep(xgb_model = final_model, X_train = as.matrix(shap_metagen_df[, subset_feat_cols]))
 shap.plot.summary(shap_long)
 
-# shap.plot.summary with top features (SHAP value > 0.005)
-top_shap <- shap_mean_abs %>%
-  group_by(feature) %>%
-  filter(shap_mean_abs > 0.005)
 
-shap_long_filtered <- shap_long %>%
-  filter(variable %in% top_shap$feature) %>%
-  mutate(variable = factor(variable, levels = unique(variable)))
+### mean absolute SHAP value per feature
+shap_mean_abs <- sort(colMeans(abs(shap_df)), decreasing = TRUE)
+shap_mean_abs <- as.data.frame(shap_mean_abs) # covert to data.frame
+shap_mean_abs$feature <- rownames(shap_mean_abs)
+shap_mean_abs
 
-shap.plot.summary(shap_long_filtered)
+# plot mean absolute SHAP value per feature
+ggplot(shap_mean_abs, aes(x = reorder(feature, shap_mean_abs), y = shap_mean_abs)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Mean absolute SHAP value", 
+       x = "Feature", y = "Mean absolute SHAP value")
 
 
-### SHAP dependence plots
-# how SHAP values for a given feature vary as the input values for the feature vary (CLR transformed relative abundance)
-
-# plot dependence plot for feature of interest
+### SHAP dependence plots (how SHAP values for a given feature vary as the input values for the feature vary)
+# plot dependence plot for feature of interest (shap.plot.dependence and ggplot)
 shap.plot.dependence(data_long = shap_long, x = "Lachnoclostridium_sp._YL32", y = NULL)
 shap.plot.dependence(data_long = shap_long, x = "Petrimonas_mucosa", y = NULL)
 
 
-# filter for the feature of interest
+# wide table of CLR-transformed relative abundance
+rfvalue_wide <- shap_long %>%
+  select(ID, variable, rfvalue) %>%
+  pivot_wider(names_from = variable, values_from = rfvalue)
+
+
 feature_name <- "Lachnoclostridium_sp._YL32"
-shap_dep <- shap_long %>%
-  filter(variable == feature_name)
+shap_dep <- shap_long %>% filter(variable == feature_name)
+plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
+interaction_feature <- "Streptococcus_mutans"
 
-# plot dependence plot 
-ggplot(shap_dep, aes(x = rfvalue, y = value)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth(method = "loess", se = TRUE, color = "blue") +
+ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
+  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
   labs(title = paste("SHAP dependence plot for", feature_name),
-       x = "Feature value (CLR-transformed relative abundances)",
-       y = "SHAP value") +
-  theme_minimal()
+       x = paste(feature_name, "- CLR abun"), 
+       y = paste(feature_name, "- SHAP value"),
+       color = paste(interaction_feature, "- CLR abun"))
 
 
-### SHAP interaction values
-# how pairs of features interact in affecting the prediction
+feature_name <- "Petrimonas_mucosa"
+shap_dep <- shap_long %>% filter(variable == feature_name)
+plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
+interaction_feature <- "Anaerobutyricum_hallii"
 
-# compute SHAP interaction values (3D array)
+ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
+  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
+  labs(title = paste("SHAP dependence plot for", feature_name),
+       x = paste(feature_name, "- CLR abun"), 
+       y = paste(feature_name, "- SHAP value"),
+       color = paste(interaction_feature, "- CLR abun"))
+
+
+### SHAP interaction values (how pairs of features interact in affecting the prediction)
 interaction_values <- predict(final_model,
-                              newdata = as.matrix(metagen[, all_feat_cols]),
+                              newdata = as.matrix(shap_metagen_df[, subset_feat_cols]),
                               predinteraction = TRUE)
+interaction_values <- interaction_values[, -ncol(interaction_values), -ncol(interaction_values)] # remove BIAS term
+mean_interactions <- apply(abs(interaction_values), c(2, 3), mean) # average absolute interaction strengths
 
+# set row and column names
+feature_names <- colnames(shap_metagen_df[, subset_feat_cols])
+rownames(mean_interactions) <- feature_names
+colnames(mean_interactions) <- feature_names
 
-### top feature pairs based on interaction strength (pairwise)
-# aggregate across samples (interaction matrix)
-mean_interactions <- apply(abs(interaction_values), c(2, 3), mean)
+# convert to long format for plotting
+interaction_long <- as.data.frame(mean_interactions) %>%
+  rownames_to_column("Feature1") %>%
+  pivot_longer(cols = -Feature1, names_to = "Feature2", values_to = "InteractionStrength")
 
-feature_names <- colnames(mean_interactions) # get feature names
-
-# convert to long format
-interaction_df <- as.data.frame(mean_interactions)
-interaction_df$Feature1 <- feature_names
-interaction_long <- pivot_longer(interaction_df, 
-                                 cols = -Feature1, 
-                                 names_to = "Feature2", 
-                                 values_to = "InteractionStrength")
-
-# remove self-interactions (diagonal)
+# remove self-interactions (diagonal) - to see other interactions more clearly
 interaction_long <- interaction_long %>%
   filter(Feature1 != Feature2)
 
-# remove duplicate symmetric pairs
-interaction_long <- interaction_long %>%
-  rowwise() %>%
-  mutate(pair = paste(sort(c(Feature1, Feature2)), collapse = "_")) %>%
-  distinct(pair, .keep_all = TRUE) %>%
-  ungroup()
-
-# top interactions
-top_interactions <- interaction_long %>%
-  arrange(desc(InteractionStrength)) %>%
-  head(20)
-top_interactions
-
-# plot top interactions (heatmap)
-ggplot(top_interactions, aes(x = Feature1, y = Feature2, fill = InteractionStrength)) +
-  geom_tile() +
-  scale_fill_viridis_c() +
-  theme_minimal() +
+# plot interaction heatmap
+ggplot(interaction_long, aes(x = Feature1, y = Feature2, fill = InteractionStrength)) +
+  geom_tile() + scale_fill_viridis_c() + theme_minimal() + coord_fixed() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Top SHAP feature interactions", x = "Feature 1", y = "Feature 2")
+  labs(title = "SHAP feature interactions", fill = "Mean absolute interaction")
 
 
-### show strongest-interacting features (feature-wise sum)
-# compute sum of interactions for each feature, excluding self-interactions (diagonals)
-interaction_strength_per_feature <- rowSums(mean_interactions) - diag(mean_interactions)
+### feature-specific interactions
+target_feat <- "Lachnoclostridium_sp._YL32" # feature of interest
+target_feat <- "Petrimonas_mucosa" # feature of interest
 
-# rank features by interaction strength
-top_features <- sort(interaction_strength_per_feature, decreasing = TRUE)[1:20]
-top_feature_names <- names(top_features)
-top_interaction_matrix <- mean_interactions[top_feature_names, top_feature_names] # subset matrix
+# data.frame with average feature specific interaction for target_feat 
+target_interact <- data.frame(feature = feature_names,
+                              interaction = mean_interactions[which(feature_names == target_feat), ])
+target_interact <- target_interact[target_interact$feature != target_feat, ] # remove self-interaction
 
-# plot strongest interactions (heatmap)
-heatmap(top_interaction_matrix,
-        main = "SHAP interaction heatmap (Top features only)",
-        col = viridis::viridis(100), 
-        margins = c(8, 8))
-
-
-### dependence plots for top interacting pairs
-shap_f1 <- shap_long %>% filter(variable == "Acutalibacter_muris") # get SHAP values for Acutalibacter_muris
-shap_f1$interactor_value <- metagen[["Enterocloster_clostridioformis"]] # add abundance values for Enterocloster_clostridioformis
-
-# plot SHAP values versus abundance for Acutalibacter_muris and color by abundance of Enterocloster_clostridioformis
-ggplot(shap_f1, aes(x = value, y = rfvalue, color = interactor_value)) +
-  geom_point(alpha = 0.6) +
-  scale_color_viridis_c(name = "Enterocloster_clostridioformis") +
-  labs(title = paste("SHAP dependence plot:", "Acutalibacter_muris", "vs", "Enterocloster_clostridioformis"),
-       x = paste("Acutalibacter_muris", "(abundance)"),
-       y = paste("SHAP value for", "Acutalibacter_muris")) +
-  theme_minimal()
+# plot feature-specific interactions
+ggplot(target_interact, aes(x = reorder(feature, interaction), y = interaction)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = paste("SHAP interactions with", target_feat),
+       x = "Interacting feature", y = "Mean absolute interaction")
 
 
-# loop through top 20 interactions
-for (i in 1:nrow(top_interactions)) {
-  f1 <- top_interactions$Feature1[i]
-  f2 <- top_interactions$Feature2[i]
-  
-  # get SHAP values for f1
-  shap_f1 <- shap_long %>% filter(variable == f1)
-  
-  # add the interacting feature's abundance from the metagen dataset
-  shap_f1$interactor_value <- metagen[[f2]]
-  
-  # plot one feature's SHAP values versus its abundance and colored by the interacting feature's abundance
-  p <- ggplot(shap_f1, aes(x = value, y = rfvalue, color = interactor_value)) +
-    geom_point(alpha = 0.6) +
-    scale_color_viridis_c(name = f2) +
-    labs(title = paste("SHAP dependence plot:", f1, "vs", f2),
-         x = paste(f1, "(abundance)"),
-         y = paste("SHAP value for", f1)) +
-    theme_minimal()
-  
-  print(p)
-}
+### mean absolute SHAP value per class per feature
+shap_df$condition <- shap_metagen_df$condition
+abs_shap_by_class <- shap_df %>%
+  pivot_longer(cols = -condition) %>%
+  group_by(condition, name) %>%
+  summarise(mean_abs_shap = mean(abs(value)), .groups = "drop")
+
+# plot mean absolute SHAP value per class per feature
+ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
+  geom_col(position = "dodge") +
+  coord_flip() + theme_minimal() +
+  labs(title = "Class-specific mean absolute SHAP values",
+       x = "Feature", y = "Mean abs SHAP", fill = "Condition")
 
 
-### partial dependence plots (PDP)
-# shows the average effect of the feature on predicted outcome
-library(pdp)
+### mean SHAP value per class per feature
+shap_df$condition <- shap_metagen_df$condition
+shap_by_class <- shap_df %>%
+  pivot_longer(cols = -condition) %>%
+  group_by(condition, name) %>%
+  summarise(mean_shap = mean(value), .groups = "drop")
 
-# prepare data matrix without label
-X <- as.matrix(metagen[, all_feat_cols])
-
-# partial dependence for Lachnoclostridium_sp._YL32
-pdp_lachno <- partial(object = final_model,
-                      pred.var = "Lachnoclostridium_sp._YL32",
-                      train = metagen[, all_feat_cols],
-                      grid.resolution = 20, # number of grid points across the feature's range
-                      type = "regression", # output of the model is probabilities
-                      prob = TRUE, # return probabilities (not logits)
-                      plot = FALSE)
-
-ggplot(pdp_lachno, aes(x = Lachnoclostridium_sp._YL32, y = yhat)) +
-  geom_line(color = "blue") + theme_minimal() +
-  labs(title = "Partial dependence plot",
-       x = "Lachnoclostridium_sp._YL32 (Abundance)", y = "Predicted probability of disease")
+# plot mean SHAP value per class per feature
+ggplot(shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
+  geom_col(position = "dodge") +
+  coord_flip() + theme_minimal() +
+  labs(title = "Class-specific mean SHAP values",
+       x = "Feature", y = "Mean SHAP", fill = "Condition")
 
 
-# partial dependence for Petrimonas_mucosa
-pdp_petrim <- partial(object = final_model,
-                      pred.var = "Petrimonas_mucosa",
-                      train = metagen[, all_feat_cols],
-                      grid.resolution = 20, # number of grid points across the feature's range
-                      type = "regression", # output of the model is probabilities
-                      prob = TRUE, # return probabilities (not logits)
-                      plot = FALSE)
+### how the impact of a driven feature on model prediction varies between healthy and disease samples
+# histogram of SHAP values
+ggplot(shap_df, aes(x = Lachnoclostridium_sp._YL32, fill = condition)) +
+  geom_density(alpha = 0.6) + theme_minimal() +
+  labs(title = "SHAP value distribution - Lachnoclostridium_sp._YL32",
+       x = "SHAP value", y = "Density", fill = "Condition")
 
-ggplot(pdp_petrim, aes(x = Petrimonas_mucosa, y = yhat)) +
-  geom_line(color = "blue") + theme_minimal() +
-  labs(title = "Partial dependence plot",
-       x = "Petrimonas_mucosa (Abundance)", y = "Predicted probability of disease")
+# boxplot of SHAP values
+ggplot(shap_df, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "SHAP values for Lachnoclostridium_sp._YL32 by condition",
+       y = "SHAP value", x = "Condition")
+
+# box plot of CLR-abundance
+ggplot(shap_metagen_df, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "CLR abundance of Lachnoclostridium_sp._YL32 by condition",
+       y = "CLR Abundance", x = "Condition")
+
+
+# histogram of SHAP values
+ggplot(shap_df, aes(x = Petrimonas_mucosa, fill = condition)) +
+  geom_density(alpha = 0.6) + theme_minimal() +
+  labs(title = "SHAP value distribution - Petrimonas_mucosa",
+       x = "SHAP value", y = "Density", fill = "Condition")
+
+# boxplot of SHAP values
+ggplot(shap_df, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "SHAP values for Petrimonas_mucosa by condition",
+       y = "SHAP value", x = "Condition")
+
+# box plot of CLR-abundance
+ggplot(shap_metagen_df, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "CLR abundance of Petrimonas_mucosa by condition",
+       y = "CLR abundance", x = "Condition")
+
+
+### SHAP values versus predicted probabilities
+shap_df$ID <- rownames(shap_df)
+shap_df$pred_prob <- predict(final_model, newdata = dtrain_full)
+
+# Petrimonas_mucosa
+plot_df <- shap_df %>%
+  select(ID, Petrimonas_mucosa, condition, pred_prob)
+
+ggplot(plot_df, aes(x = Petrimonas_mucosa, y = pred_prob, color = condition)) +
+  geom_point(alpha = 0.6) + theme_minimal() +
+  labs(title = "Petrimonas_mucosa SHAP value versus prediction probability",
+       x = "SHAP value for Petrimonas_mucosa", y = "Predicted probability (disease)")
+
+# Lachnoclostridium_sp._YL32
+plot_df <- shap_df %>%
+  select(ID, Lachnoclostridium_sp._YL32, condition, pred_prob)
+
+ggplot(plot_df, aes(x = Lachnoclostridium_sp._YL32, y = pred_prob, color = condition)) +
+  geom_point(alpha = 0.6) + theme_minimal() +
+  labs(title = "Lachnoclostridium_sp._YL32 SHAP value versus prediction probability",
+       x = "SHAP value for Lachnoclostridium_sp._YL32", y = "Predicted probability (disease)")
 
 
 sessionInfo()
