@@ -79,7 +79,7 @@ Data is split into training data and testing data.
     - **Stratification**: ensures that the class distribution in each fold of the cross-validation split reflects the overall distribution of the dataset so that each training and testing fold has a representative mix of classes.
     
 Multiple subsets of the training data are created using bootstrap sampling and each subset is used to build an individual tree. 
-  - **Bootstrap sampling**: generates multiple new datasets from the training data using random sampling with replacement. Each bootstrap sample is the same size as the original dataset, but some of the samples are repeated and some are omitted. 
+  - **Bootstrap sampling**: generates multiple new datasets from the training data using random sampling with replacement. Each bootstrap sample is the same size as the original dataset, but some of the samples are repeated and some are omitted. Each decision tree within a random forest is trained on a bootstrap sample of the training data, which introduces variation, so that each tree does not learn the same patterns. On average, about two-thirds of the training data is included in any given bootstrap sample (the remaining one-third of the data are the out-of-bag (OOB) samples).
 
 At each node split in a decision tree, only a random subset of features is considered. 
   - **Random feature selection**: each decision tree is trained on a bootstrap sample, but at each node split, only a random subset of the features (```mtry```) is selected. This decreases the correlation between the trees, which reduces variance and improves generalization.
@@ -88,27 +88,36 @@ The samples in the testing data are then dropped down the tree until they reach 
   - **Majority vote**: each model votes for a class label and the class with the most votes wins.
   - **Average prediction**: each model outputs a numeric value and the average number is the final prediction.
 
+### Random Forest Feature Importance
+Features within the data (especially in high dimensional datasets) can be irrelevant to class separation. Models trained with many irrelevant features are more likely to learn patterns specific to the training dataset and thus not generalize well to unseen data.
+
+**Mean decrease in Gini impurity**: measures how much a feature contributes to decreasing Gini impurity (how pure or homogeneous a set of classes is at a given node in a decision tree) when it is used to split data across all of the trees in the forest.
+  - High mean decrease in Gini impurity = splitting the data by the feature results in nodes with increased purity
+
+**Mean decrease in accuracy**: measures how much model accuracy drops when the feature is randomly permuted (permutation importance). Values of the feature in the OOB samples are permuted and the accuracy of the model before and after the permutation is measured.
+  - High mean decrease in accuracy = the feature contributes a lot to the accuracy of the predictions made by the model
+
+**Recursive feature elimination**:a model is iteratively trained, removing the least important features (based on mean decrease in Gini impurity or mean decrease in accuracy) at each iteration and comparing model performance for the different numbers of features used to train the model.
+  - Both mean decrease in Gini and mean decrease in accuracy can be biased toward continuous features and categorical features with many levels (more unique values = more opportunities to split the data = more chances to fit the target or reduce impurity, even by chance) and highly correlated features (they share predictive information, so the decrease in accuracy/impurity is masked).
+
+**Boruta feature selection**: Boruta creates a shadow feature (permuted version) for every original feature in the dataset, which it adds to the original data set (doubling the number of features). 
+
+For each Boruta iteration, a random forest model is trained using the doubled dataset and feature importances (mean decrease in accuracy) is calculated for all of the features (original and shadow). The importance of each of the original features is compared against the maximum importance achieved by any of the shadow features. 
+
+Boruta tracks the number of iterations where a feature has an importance higher than the maximum importance achieved by any of the shadow features. If this occurs significantly more frequently than expected by chance (as determined using a binomial test and Bonferroni correction), the original feature is Confirmed. If this occurs significantly less frequently than expected by chance, the original feature is Rejected. If the frequency of this occurring is not significantly different than expected by chance, the original Feature is Tentative. 
+
+Boruta calls a new random forest model until all features are classified as Confirmed or Rejected, or until it hits the maximum number of iterations specified by ```maxRuns```. Tentative features are resolved by comparing their median importance across iterations to the median importance of the maximum shadow feature importance across iterations. If the importance of the Tentative feature is higher than the median of the maximum shadow feature, it is Confirmed, if it is lower, it is Rejected. 
+
 ### Random Forest Hyperparameters
-Each decision tree within a random forest is trained on a bootstrap sample of the training data. This introduces variation, so that each tree doesn’t learn the same patterns. On average, about two-thirds of the training data is included in any given bootstrap sample (the remaining one-third of the data are the out-of-bag (OOB) samples).
-
-Features within the data (especially in high dimensional datasets) can be irrelevant to class separation. Models trained with many irrelevant features are more likely to learn patterns specific to the training dataset and thus not generalize well to unseen data. 
-  - **Feature selection**: the process of identifying and using only the most informative features in the dataset for training a model.
-    - **Recursive feature elimination**: a model is iteratively trained, removing the least important features (based on mean decrease in Gini impurity or mean decrease in accuracy) at each iteration and comparing model performance for the different numbers of features used to train the model.
-    - **Mean decrease in Gini impurity**: measures how much a feature contributes to decreasing Gini impurity (how pure or homogeneous a set of classes is at a given node in a decision tree) when it is used to split data across all of the trees in the forest.
-      - High mean decrease in Gini impurity = splitting the data by the feature results in nodes with increased purity
-    - **Mean decrease in accuracy**: measures how much model accuracy drops when the feature is randomly permuted (permutation importance). Values of the feature in the OOB samples are permuted and the accuracy of the model before and after the permutation is measured.
-      - High mean decrease in accuracy = the feature contributes a lot to the accuracy of the predictions made by the model
-    - Both mean decrease in Gini and mean decrease in accuracy can be biased toward continuous features and categorical features with many levels (more unique values = more opportunities to split the data = more chances to fit the target or reduce impurity, even by chance) and highly correlated features (they share predictive information, so the decrease in accuracy/impurity is masked).
-
 Each tree is grown by recursively splitting the data at internal decision nodes, starting at the root node. With random forests, only a random subset of features is considered at each split to help decorrelate the trees and thereby increase the robustness of the ensemble.
+
   - **Number of features per split** (```mtry```): number of features randomly selected at each node split. The default is the square root of the number of features for classification tasks and one third of the features for regression tasks. 
     - Lower ```mtry``` = increases tree diversity, which reduces correlation between trees (helps reduce overfitting) 
     - Higher ```mtry``` = potentially better split quality, but higher correlation between the trees
    
 At each split, among the selected mtry features, the algorithm chooses the feature and the threshold that best separates the classes (how homogenous the resulting nodes are after the split). For classification, the goal is to reduce impurity (which is typically measured using Gini impurity), and for regression the goal is to minimize variance in the child nodes. However, if the classes are imbalanced, the model will favor majority class predictions and the model will have poor sensitivity for the minority class. 
   - **Imbalanced dataset**: target classes (labels) are not represented equally within the dataset. Standard models tend to optimize for overall accuracy, which favors the majority class, resulting in the minority class being underpredicted.
-  - **Class weights** (```classwt```): mitigate the effects of the imbalance between class labels by adjusting the penalty for misclassifying samples of different classes. Essentially, class weights make the model pay more attention to the minority class by increasing the impact (effective contribution) of the minority class on impurity calculations and thereby influencing which splits are considered good.
-    - If the class weights are too extreme, the model may overfit the minority class.
+  - **Class weights** (```classwt```): mitigate the effects of the imbalance between class labels by adjusting the penalty for misclassifying samples of different classes. Essentially, class weights make the model pay more attention to the minority class by increasing the impact (effective contribution) of the minority class on impurity calculations and thereby influencing which splits are considered good. Class balance in the number of samples does not always mean signal balance. Some classes may be harder to predict, due to weaker features and/or more variability within the class, which can be determined by examining class-level performance.
 
 The splitting process continues recursively for each new node until a stopping rule is met. Typical stopping conditions include: all samples in a node belonging to the same class or the node containing fewer samples than ```nodesize```.
   - **Minimum node size for a split** (```nodesize```): minimum number of samples required to split an internal node. ```nodesize``` controls tree depth and complexity.
@@ -161,7 +170,15 @@ The calculated logit correction is scaled by the learning rate (```eta```) and i
 
 Trees are added sequentially until a stopping condition is reached, such as hitting the predefined number of rounds (```nrounds```) or satisfying early stopping criteria (```early_stopping_rounds```). The prediction for a sample is the sum of the initial logit and all of the logit corrections from the sequence of trees. For binary classification, the sigmoid function is applied to this final logit to produce a probability.
 
-### Feature Importance for XGBoost
+### XGBoost Feature Importance
+Features within the data (especially in high dimensional datasets) can be irrelevant to class separation. Models trained with many irrelevant features are more likely to learn patterns specific to the training dataset and thus not generalize well to unseen data.
+
+**Gain**: the average improvement in the loss function of the model that results from  the feature being used to split the data (i.e., how much the feature contribute to model performance).
+
+**Cover**: measures the average number of samples affected by splits involving the feature (i.e., how broadly the feature is used across the dataset). 
+
+**Frequency**: the number of times a feature is used to split a node across all trees.
+
 Model-agnostic methods, like ```fastshap```, need to consider all possible subsets of features to compute Shapley values, which is exponential in complexity (2<sup>number of features</sup>) and therefore typically rely on approximation methods like Monte Carlo sampling.
   - **Shapley values**: measure the average marginal contribution of each feature across all possible combinations of features (subsets) to the model prediction. They explain how each feature contributes the output of the model (prediction) for a specific sample (local interpretability) and can be aggregated across samples to explain how each feature influences the model overall (global feature importance).
 
@@ -204,7 +221,7 @@ In XGBoost, important hyperparameters relate to weight regularization (L1 and L2
 
 **Maximum logit correction** (```max_delta_step```): limits the maximum logit corrections that can be taken during each boosting iteration. If the sum of the Hessians is very small (which can be caused by imbalanced datasets (probability set close to 0 or 1 early in training) or by saturated sigmoid outputs (probability approaching 0 or 1)), the leaf values end up being very large and learning becomes destabilized. The default is zero (no constraint). For imbalanced data, try values between 1 - 10.
 
-**Class imbalance** (```scale_pos_weight```): scales the gradients and the Hessians for the positive class (label = 1) during training. An imbalanced dataset can be biased toward the majority class and underperform on the minority class. To counter this, ```scale_pos_weight``` is commonly set to the ratio of the number of negative samples divided by the number of positive samples. This number is used to scale the gradients and the Hessians of the positive class. Larger gradients and Hessians contribute more to the gain function, resulting in increased gain from splits that separate the minority class from the majority class, and thus encouraging the model to put more importance on the minority class samples.
+**Class imbalance** (```scale_pos_weight```): scales the gradients and the Hessians for the positive class (label = 1) during training. An imbalanced dataset can be biased toward the majority class and underperform on the minority class. To counter this, ```scale_pos_weight``` is commonly set to the ratio of the number of negative samples divided by the number of positive samples. This number is used to scale the gradients and the Hessians of the positive class. Larger gradients and Hessians contribute more to the gain function, resulting in increased gain from splits that separate the minority class from the majority class, and thus encouraging the model to put more importance on the minority class samples. Class balance in the number of samples does not always mean signal balance. Some classes may be harder to predict, due to weaker features and/or more variability within the class, which can be determined by examining class-level performance.
 
 ## :bar_chart::medal_sports: Classification Performance Metrics
 Performance metrics are used to evaluate how well the model performs on the test data set (the prediction quality of the model).
