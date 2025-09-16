@@ -1867,8 +1867,6 @@ final_model <- xgboost::xgb.train(params = best_params,
 ###   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
 #################################################################################
 
-selected_features
-
 # compute tree SHAP values
 shap_values <- predict(final_model, newdata = dtrain_full, predcontrib = TRUE)
 shap_df <- as.data.frame(shap_values)
