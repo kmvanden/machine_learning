@@ -1862,10 +1862,16 @@ final_model <- xgboost::xgb.train(params = best_params,
                                   nrounds = best_nrounds,
                                   verbose = 1)
 
+# # save final model
+# saveRDS(final_model, file = "final_model_xgboost.rds")
 
 #################################################################################
 ###   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
 #################################################################################
+
+#################################
+subset_feat_cols <- setdiff(colnames(shap_metabo_df), c("condition", "condition_numeric"))
+
 
 # compute tree SHAP values
 shap_values <- predict(final_model, newdata = dtrain_full, predcontrib = TRUE)
@@ -1882,7 +1888,21 @@ shap.plot.summary(shap_long)
 shap_mean_abs <- sort(colMeans(abs(shap_df)), decreasing = TRUE)
 shap_mean_abs <- as.data.frame(shap_mean_abs) # covert to data.frame
 shap_mean_abs$feature <- rownames(shap_mean_abs)
-shap_mean_abs
+shap_mean_abs <- shap_mean_abs %>% 
+  arrange(desc(shap_mean_abs))
+
+
+# recreate shap.plot.summary from treeshap (beeswarm-style plot) in ggpplot
+feature_order <- shap_mean_abs$feature
+shap_plot <- shap_long %>%
+  mutate(variable = factor(variable, levels = rev(feature_order)))
+
+ggplot(shap_plot, aes(x = value, y = variable, color = rfvalue)) +
+  geom_jitter(height = 0.2, alpha = 0.7, size = 1.2) +
+  scale_color_viridis_c(option = "plasma", direction = -1) + theme_minimal() +
+  labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
+       color = "Feature value")
+  
 
 # plot mean absolute SHAP value per feature
 ggplot(shap_mean_abs, aes(x = reorder(feature, shap_mean_abs), y = shap_mean_abs)) +
@@ -1896,7 +1916,7 @@ ggplot(shap_mean_abs, aes(x = reorder(feature, shap_mean_abs), y = shap_mean_abs
 shap.plot.dependence(data_long = shap_long, x = "beta.alanine", y = NULL)
 shap.plot.dependence(data_long = shap_long, x = "myristate..14.0.", y = NULL)
 
-# wide table of CLR-transformed relative abundance
+# wide table of log-transformed relative abundance
 rfvalue_wide <- shap_long %>%
   select(ID, variable, rfvalue) %>%
   pivot_wider(names_from = variable, values_from = rfvalue)
@@ -1911,9 +1931,9 @@ ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]]
   geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
   scale_color_distiller(palette = "RdBu", direction = 1) +
   labs(title = paste("SHAP dependence plot for", feature_name),
-       x = paste(feature_name, "- CLR abun"), 
+       x = paste(feature_name, "- log abun"), 
        y = paste(feature_name, "- SHAP value"),
-       color = paste(interaction_feature, "- CLR abun"))
+       color = paste(interaction_feature, "- log abun"))
 
 
 feature_name <- "myristate..14.0."
@@ -1925,9 +1945,12 @@ ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]]
   geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
   scale_color_distiller(palette = "RdBu", direction = 1) +
   labs(title = paste("SHAP dependence plot for", feature_name),
-       x = paste(feature_name, "- CLR abun"), 
+       x = paste(feature_name, "- log abun"), 
        y = paste(feature_name, "- SHAP value"),
-       color = paste(interaction_feature, "- CLR abun"))
+       color = paste(interaction_feature, "- log abun"))
+
+
+
 
 
 ### SHAP interaction values (how pairs of features interact in affecting the prediction)
@@ -1974,6 +1997,8 @@ ggplot(target_interact, aes(x = reorder(feature, interaction), y = interaction))
        x = "Interacting feature", y = "Mean absolute interaction")
 
 
+
+
 ### mean absolute SHAP value per class per feature
 shap_df$condition <- shap_metabo_df$condition
 abs_shap_by_class <- shap_df %>%
@@ -1983,8 +2008,7 @@ abs_shap_by_class <- shap_df %>%
 
 # plot mean absolute SHAP value per class per feature
 ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
-  geom_col(position = "dodge") +
-  coord_flip() + theme_minimal() +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
   labs(title = "Class-specific mean absolute SHAP values",
        x = "Feature", y = "Mean abs SHAP", fill = "Condition")
 
@@ -1998,13 +2022,12 @@ shap_by_class <- shap_df %>%
 
 # plot mean SHAP value per class per feature
 ggplot(shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
-  geom_col(position = "dodge") +
-  coord_flip() + theme_minimal() +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
   labs(title = "Class-specific mean SHAP values",
        x = "Feature", y = "Mean SHAP", fill = "Condition")
 
 
-### how the impact of a driven feature on model prediction varies between healthy and disease samples
+### how the impact of a given feature on model prediction varies between healthy and disease samples
 # histogram of SHAP values
 ggplot(shap_df, aes(x = beta.alanine, fill = condition)) +
   geom_density(alpha = 0.6) + theme_minimal() +
@@ -2017,11 +2040,11 @@ ggplot(shap_df, aes(x = condition, y = beta.alanine, fill = condition)) +
   labs(title = "SHAP values for beta.alanine by condition",
        y = "SHAP value", x = "Condition")
 
-# box plot of CLR-abundance
+# box plot of log-abundance
 ggplot(shap_metabo_df, aes(x = condition, y = beta.alanine, fill = condition)) +
   geom_boxplot() + theme_minimal() +
-  labs(title = "CLR abundance of beta.alanine by condition",
-       y = "CLR Abundance", x = "Condition")
+  labs(title = "Log abundance of beta.alanine by condition",
+       y = "Log Abundance", x = "Condition")
 
 
 # histogram of SHAP values
@@ -2036,11 +2059,11 @@ ggplot(shap_df, aes(x = condition, y = X.24683, fill = condition)) +
   labs(title = "SHAP values for X.24683 by condition",
        y = "SHAP value", x = "Condition")
 
-# box plot of CLR-abundance
+# box plot of log-abundance
 ggplot(shap_metabo_df, aes(x = condition, y = X.24683, fill = condition)) +
   geom_boxplot() + theme_minimal() +
-  labs(title = "CLR abundance of X.24683 by condition",
-       y = "CLR abundance", x = "Condition")
+  labs(title = "Log abundance of X.24683 by condition",
+       y = "Log abundance", x = "Condition")
 
 
 ### SHAP values versus predicted probabilities
