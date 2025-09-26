@@ -27,8 +27,9 @@ meta <- read.table("metadata.txt", header = TRUE)
 sample_key <- read_excel("metabo_batch.xlsx", sheet = "Sample Meta Data") # sample name key
 sample_key <- sample_key %>% mutate(CLIENT_SAMPLE_ID = sub("KMV_", "SMS_", CLIENT_SAMPLE_ID)) # rename sample ids
 all(sample_key$CLIENT_SAMPLE_ID %in% meta$sample_id)
-meta <- merge(meta, sample_key[, c("CLIENT_SAMPLE_ID", "PARENT_SAMPLE_NAME")], 
-              by.x = "sample_id", by.y = "CLIENT_SAMPLE_ID", all.x = TRUE) %>% # add PARENT_SAMPLE_NAME to meta
+meta <- meta %>%
+  left_join(sample_key %>% dplyr::select(CLIENT_SAMPLE_ID, PARENT_SAMPLE_NAME),
+            by = c("sample_id" = "CLIENT_SAMPLE_ID")) %>% # add PARENT_SAMPLE_NAME to meta
   filter(!is.na(PARENT_SAMPLE_NAME)) # subset
 
 # convert condition column into a factor
@@ -1137,10 +1138,6 @@ final_model_auc <- randomForest(x = boruta_df[, subset_feat_cols],
 ###   XGBOOST LOGLOSS MODEL - FAST SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
 ######################################################################################
 
-################################################
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
-
-
 # function to get predicted disease probability
 pred_fun <- function(object, newdata) {
   predict(object, newdata = newdata, type = "prob")[, "disease"]
@@ -1171,15 +1168,15 @@ shap_long <- shap_long %>%
 
 # mean shap values
 mean_shap_df <- shap_long %>%
-  group_by(feature) %>%
-  summarise(mean_shap = mean(value, na.rm = TRUE)) 
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_shap = mean(value, na.rm = TRUE)) 
 
 # join mean abs values and mean values
 shap_summary <- shap_long %>%
-  group_by(feature) %>%
-  summarise(mean_abs_shap = mean(abs(value), na.rm = TRUE)) %>%
-  arrange(desc(mean_abs_shap)) %>%
-  left_join(mean_shap_df, by = "feature")
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_abs_shap = mean(abs(value), na.rm = TRUE)) %>%
+  dplyr::arrange(desc(mean_abs_shap)) %>%
+  dplyr::left_join(mean_shap_df, by = "feature")
 
 # plot mean absolute SHAP value per feature
 ggplot(shap_summary, aes(x = reorder(feature, mean_abs_shap), y = mean_abs_shap)) +
@@ -1194,11 +1191,13 @@ ggplot(shap_summary, aes(x = reorder(feature, mean_shap), y = mean_shap)) +
        x = "Feature", y = "Mean SHAP value")
 
 # recreate shap.plot.summary from treeshap (beeswarm-style plot)
-feature_order <- shap_summary$feature
 shap_plot <- shap_long %>%
-  mutate(feature = factor(feature, levels = rev(feature_order)))
+  dplyr::group_by(feature) %>%
+  dplyr::mutate(scaled_rfvalue = scale(rfvalue)[,1]) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(feature = factor(feature, levels = rev(shap_summary$feature)))
 
-ggplot(shap_plot, aes(x = value, y = feature, color = rfvalue)) +
+ggplot(shap_plot, aes(x = value, y = feature, color = scaled_rfvalue)) +
   geom_jitter(height = 0.2, alpha = 0.7, size = 1.2) +
   scale_color_viridis_c(option = "plasma", direction = -1) + theme_minimal() +
   labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
