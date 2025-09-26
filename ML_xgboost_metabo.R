@@ -27,8 +27,9 @@ meta <- read.table("metadata.txt", header = TRUE)
 sample_key <- read_excel("metabo_batch.xlsx", sheet = "Sample Meta Data") # sample name key
 sample_key <- sample_key %>% mutate(CLIENT_SAMPLE_ID = sub("KMV_", "SMS_", CLIENT_SAMPLE_ID)) # rename sample ids
 all(sample_key$CLIENT_SAMPLE_ID %in% meta$sample_id)
-meta <- merge(meta, sample_key[, c("CLIENT_SAMPLE_ID", "PARENT_SAMPLE_NAME")], 
-              by.x = "sample_id", by.y = "CLIENT_SAMPLE_ID", all.x = TRUE) %>% # add PARENT_SAMPLE_NAME to meta
+meta <- meta %>%
+  left_join(sample_key %>% dplyr::select(CLIENT_SAMPLE_ID, PARENT_SAMPLE_NAME),
+            by = c("sample_id" = "CLIENT_SAMPLE_ID")) %>% # add PARENT_SAMPLE_NAME to meta
   filter(!is.na(PARENT_SAMPLE_NAME)) # subset
 
 # convert condition column into a factor
@@ -1869,10 +1870,6 @@ final_model <- xgboost::xgb.train(params = best_params,
 ###   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
 #################################################################################
 
-#################################
-subset_feat_cols <- setdiff(colnames(shap_metabo_df), c("condition", "condition_numeric"))
-
-
 # compute tree SHAP values
 shap_values <- predict(final_model, newdata = dtrain_full, predcontrib = TRUE)
 shap_df <- as.data.frame(shap_values)
@@ -1950,9 +1947,6 @@ ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]]
        color = paste(interaction_feature, "- log abun"))
 
 
-
-
-
 ### SHAP interaction values (how pairs of features interact in affecting the prediction)
 interaction_values <- predict(final_model,
                               newdata = as.matrix(shap_metabo_df[, subset_feat_cols]),
@@ -1995,8 +1989,6 @@ ggplot(target_interact, aes(x = reorder(feature, interaction), y = interaction))
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = paste("SHAP interactions with", target_feat),
        x = "Interacting feature", y = "Mean absolute interaction")
-
-
 
 
 ### mean absolute SHAP value per class per feature
