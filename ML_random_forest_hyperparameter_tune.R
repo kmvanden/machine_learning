@@ -11,6 +11,9 @@ library(pROC)
 library(Boruta)
 library(ParBayesianOptimization)
 library(doParallel)
+library(fastshap)
+library(viridis)
+library(ggrepel)
 
 
 # set.seed
@@ -1235,7 +1238,7 @@ str(boruta_df)
 set.seed(1234)
 
 # column names for features to be included in model
-all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # create lists to store metrics
 feature_importances <- list() # list to store feature importances
@@ -1258,15 +1261,15 @@ for (r in 1:50) {
     test_data  <- boruta_df[test_idx, ] # testing data (fold f)
     
     # train random forest model
-    # x = all data in data.frame subset by all_feat_cols (predictor values)
+    # x = all data in data.frame subset by subset_feat_cols (predictor values)
     # y = target variable as factor
-    rf_model <- randomForest(x = train_data[, all_feat_cols], 
+    rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                              y = as.factor(train_data$condition), 
                              ntree = 500, importance = TRUE) 
     
     # evaluate on test set
-    predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
-    probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+    predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
+    probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
     
     # calculate AUC
     roc_obj <- roc(response = test_data$condition,
@@ -1416,11 +1419,8 @@ str(boruta_df)
 # set seed
 set.seed(1234)
 
-# subset metagen to just confirmed features
-boruta_df <- metagen[, c("condition", selected_features)]
-
 # column names for features to be included in model
-all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # create list of class weight settings
 weight_grid <- list(high.h = c(healthy = 3, disease = 1),
@@ -1467,7 +1467,7 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
       test_data  <- boruta_df[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
-      rf_model <- randomForest(x = train_data[, all_feat_cols], 
+      rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                                y = as.factor(train_data$condition),
                                mtry = mtry,
                                ntree = ntree, 
@@ -1476,7 +1476,7 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
                                importance = TRUE)
       
       # evaluate on test set
-      probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+      probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
       
       # calculate AUC
       roc_obj <- tryCatch({
@@ -1529,7 +1529,6 @@ bestparams_auc = getBestPars(optObj)
 ########   RANDOM FOREST - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS FROM BAYESIAN OPTIMISATION - AUC  #######
 ##################################################################################################################
 
-
 # data to be used in the model
 str(boruta_df)
 
@@ -1537,7 +1536,7 @@ str(boruta_df)
 set.seed(1234)
 
 # column names for features to be included in model
-all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # create lists to store metrics
 feature_importances <- list() # list to store feature importances
@@ -1575,9 +1574,9 @@ for (r in 1:50) {
     test_data  <- boruta_df[test_idx, ] # testing data (fold f)
     
     # train random forest model
-    # x = all data in data.frame subset by all_feat_cols (predictor values)
+    # x = all data in data.frame subset by subset_feat_cols (predictor values)
     # y = target variable as factor
-    rf_model <- randomForest(x = train_data[, all_feat_cols], 
+    rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                              y = as.factor(train_data$condition), 
                              mtry = mtry_opt,
                              ntree = ntree_opt,
@@ -1586,8 +1585,8 @@ for (r in 1:50) {
                              importance = TRUE) 
     
     # evaluate on test set
-    predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
-    probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+    predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
+    probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
     
     # calculate AUC
     roc_obj <- roc(response = test_data$condition,
@@ -1731,6 +1730,11 @@ metric_summary
 ########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS - AUC  #######
 ###########################################################################################
 
+# data to be used in the model
+str(boruta_df)
+
+# column names for features to be included in model
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # best hyperparameter values determined by Bayesian optimization
 # optimal hyperparameter values
@@ -1751,7 +1755,7 @@ classwt_opt <- weight_grid[[label_keys[bestparams_auc$classwt_label]]]
 # train the model on the full dataset
 
 set.seed(1234)
-final_model_auc <- randomForest(x = boruta_df[, all_feat_cols], 
+final_model_auc <- randomForest(x = boruta_df[, subset_feat_cols], 
                                 y = as.factor(boruta_df$condition), 
                                 mtry = mtry_opt,
                                 ntree = ntree_opt,
@@ -1763,19 +1767,243 @@ final_model_auc <- randomForest(x = boruta_df[, all_feat_cols],
 # saveRDS(final_model_auc, file = "final_rf_model_metagen_auc.rds")
 
 
+#################################################################################
+###   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
+#################################################################################
+
+# function to get predicted disease probability
+pred_fun <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "prob")[, "disease"]
+}
+
+# compute fast SHAP values
+set.seed(1234) # set seed
+
+shap_values <- fastshap::explain(object = final_model_auc,
+                                 X = boruta_df[, subset_feat_cols],
+                                 pred_wrapper = pred_fun,
+                                 nsim = 100, # number of Monte Carlo permutations
+                                 adjust = TRUE) # centered SHAP values (baseline + sum of SHAPs = prediction)
+shap_values <- as.data.frame(shap_values)     
+
+
+### summarize SHAP values
+shap_long <- shap_values %>%
+  mutate(ID = row_number()) %>%
+  pivot_longer(-ID, names_to = "feature", values_to = "value")
+
+# add rfvalues (abundance) to shap_long
+rfvalue_long <- boruta_df[, subset_feat_cols] %>%
+  mutate(ID = row_number()) %>%
+  pivot_longer(cols = -ID, names_to = "feature", values_to = "rfvalue")
+shap_long <- shap_long %>%
+  left_join(rfvalue_long, by = c("ID", "feature"))
+
+# mean shap values
+mean_shap_df <- shap_long %>%
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_shap = mean(value, na.rm = TRUE)) 
+
+# join mean abs values and mean values
+shap_summary <- shap_long %>%
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_abs_shap = mean(abs(value), na.rm = TRUE)) %>%
+  dplyr::arrange(desc(mean_abs_shap)) %>%
+  dplyr::left_join(mean_shap_df, by = "feature")
+
+# plot mean absolute SHAP value per feature
+ggplot(shap_summary, aes(x = reorder(feature, mean_abs_shap), y = mean_abs_shap)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Mean absolute SHAP value", 
+       x = "Feature", y = "Mean absolute SHAP value")
+
+# plot mean SHAP value per feature
+ggplot(shap_summary, aes(x = reorder(feature, mean_shap), y = mean_shap)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Mean SHAP value", 
+       x = "Feature", y = "Mean SHAP value")
+
+# recreate shap.plot.summary from treeshap (beeswarm-style plot)
+shap_plot <- shap_long %>%
+  dplyr::group_by(feature) %>%
+  dplyr::mutate(scaled_rfvalue = scale(rfvalue)[,1]) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(feature = factor(feature, levels = rev(shap_summary$feature)))
+
+ggplot(shap_plot, aes(x = value, y = feature, color = scaled_rfvalue)) +
+  geom_jitter(height = 0.2, alpha = 0.7, size = 1.2) +
+  scale_color_viridis_c(option = "plasma", direction = -1) + theme_minimal() +
+  labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
+       color = "Feature value")
+
+
+### SHAP dependence plots (how SHAP values for a given feature vary as the input values for the feature vary)
+# wide table of log-transformed relative abundance
+rfvalue_wide <- boruta_df[, subset_feat_cols] %>%
+  mutate(ID = row_number())
+
+feature_name <- "Lachnoclostridium_sp._YL32"
+shap_dep <- shap_long %>% filter(feature == feature_name)
+plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
+interaction_feature <- "Clostridium_sp._M62.1"
+
+ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
+  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
+  labs(title = paste("SHAP dependence plot for", feature_name),
+       x = paste(feature_name, "- log abun"), 
+       y = paste(feature_name, "- SHAP value"),
+       color = paste(interaction_feature, "- log abun"))
+
+
+feature_name <- "Petrimonas_mucosa"
+shap_dep <- shap_long %>% filter(feature == feature_name)
+plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
+interaction_feature <- "Enterocloster_clostridioformis"
+
+ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
+  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
+  labs(title = paste("SHAP dependence plot for", feature_name),
+       x = paste(feature_name, "- log abun"), 
+       y = paste(feature_name, "- SHAP value"),
+       color = paste(interaction_feature, "- log abun"))
+
+
+### mean absolute SHAP value per class per feature
+shap_values$condition <- boruta_df$condition
+abs_shap_by_class <- shap_values %>%
+  pivot_longer(cols = -condition) %>%
+  group_by(condition, name) %>%
+  summarise(mean_abs_shap = mean(abs(value)), .groups = "drop")
+
+# plot mean absolute SHAP value per class per feature
+ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
+  labs(title = "Class-specific mean absolute SHAP values",
+       x = "Feature", y = "Mean abs SHAP", fill = "Condition")
+
+
+### mean SHAP value per class per feature
+shap_values$condition <- boruta_df$condition
+abs_shap_by_class <- shap_values %>%
+  pivot_longer(cols = -condition) %>%
+  group_by(condition, name) %>%
+  summarise(mean_shap = mean(value), .groups = "drop")
+
+# plot mean SHAP value per class per feature
+ggplot(abs_shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
+  labs(title = "Class-specific mean SHAP values",
+       x = "Feature", y = "Mean SHAP", fill = "Condition")
+
+
+### how the impact of a given feature on model prediction varies between healthy and disease samples
+# histogram of SHAP values
+ggplot(shap_values, aes(x = Lachnoclostridium_sp._YL32, fill = condition)) +
+  geom_density(alpha = 0.6) + theme_minimal() +
+  labs(title = "SHAP value distribution - Lachnoclostridium_sp._YL32",
+       x = "SHAP value", y = "Density", fill = "Condition")
+
+# boxplot of SHAP values
+ggplot(shap_values, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "SHAP values for Lachnoclostridium_sp._YL32 by condition",
+       y = "SHAP value", x = "Condition")
+
+# box plot of log-abundance
+ggplot(boruta_df, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "Log abundance of Lachnoclostridium_sp._YL32 by condition",
+       y = "Log Abundance", x = "Condition")
+
+
+# histogram of SHAP values
+ggplot(shap_values, aes(x = Petrimonas_mucosa, fill = condition)) +
+  geom_density(alpha = 0.6) + theme_minimal() +
+  labs(title = "SHAP value distribution - Petrimonas_mucosa",
+       x = "SHAP value", y = "Density", fill = "Condition")
+
+# boxplot of SHAP values
+ggplot(shap_values, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "SHAP values for Petrimonas_mucosa by condition",
+       y = "SHAP value", x = "Condition")
+
+# box plot of log-abundance
+ggplot(boruta_df, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "Log abundance of Petrimonas_mucosa by condition",
+       y = "Log abundance", x = "Condition")
+
+
+### SHAP values versus predicted probabilities
+shap_values$ID <- rownames(shap_values)
+prob <- as.data.frame(predict(final_model_auc, newdata = boruta_df[, subset_feat_cols], type = "prob"))
+shap_values$pred_prob <- prob$disease
+
+# Petrimonas_mucosa
+pred_plot <- shap_values %>%
+  select(ID, Petrimonas_mucosa, condition, pred_prob)
+
+ggplot(pred_plot, aes(x = Petrimonas_mucosa, y = pred_prob, color = condition)) +
+  geom_point(alpha = 0.6) + theme_minimal() +
+  labs(title = "Petrimonas_mucosa SHAP value versus prediction probability",
+       x = "SHAP value for Petrimonas_mucosa", y = "Predicted probability (disease)")
+
+# Lachnoclostridium_sp._YL32
+pred_plot <- shap_values %>%
+  select(ID, Lachnoclostridium_sp._YL32, condition, pred_prob)
+
+ggplot(pred_plot, aes(x = Lachnoclostridium_sp._YL32, y = pred_prob, color = condition)) +
+  geom_point(alpha = 0.6) + theme_minimal() +
+  labs(title = "Lachnoclostridium_sp._YL32 SHAP value versus prediction probability",
+       x = "SHAP value for Lachnoclostridium_sp._YL32", y = "Predicted probability (disease)")
+
+
+### plot SHAP values versus importance 
+importance <- as.data.frame(importance(final_model_auc))
+importance$feature <- rownames(importance)
+shap_import_df <- shap_summary %>%
+  left_join(importance, by = "feature")
+
+# plot SHAP values verus MeanDecreaseAccuracy
+ggplot(shap_import_df, aes(x = MeanDecreaseAccuracy, y = mean_abs_shap, label = feature)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.8) +
+  geom_text_repel(size = 3) + theme_minimal() +
+  labs(title = "Mean absolute SHAP versus mean decrease accuracy",
+       x = "Mean decrease accuracy",
+       y = "Mean absolute SHAP value")
+
+# plot SHAP values verus MeanDecreaseGini
+ggplot(shap_import_df, aes(x = MeanDecreaseGini, y = mean_abs_shap, label = feature)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.8) +
+  geom_text_repel(size = 3) + theme_minimal() +
+  labs(title = "Mean absolute SHAP versus mean decrease in Gini",
+       x = "Mean decrease in Gini",
+       y = "Mean absolute SHAP value")
+
+
+### fastshap does not calculate second-order SHAP effects
+# partial dependence (PDP) interaction plots (how much each feature interacts with others)
+library(iml)
+predictor <- Predictor$new(final_model_auc, data = boruta_df[, subset_feat_cols], y = boruta_df$condition, type = "prob")
+interaction_strength <- Interaction$new(predictor)
+plot(interaction_strength)
+
+
 ####################################################################################################################
 ########   RANDOM FOREST - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT - BAL_ACC  #######
 ####################################################################################################################
 
-
 # set seed
 set.seed(1234)
 
-# subset metagen to just confirmed features
-boruta_df <- metagen[, c("condition", selected_features)]
+# data to be used in the model
+str(boruta_df)
 
 # column names for features to be included in model
-all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # create list of class weight settings
 weight_grid <- list(high.h = c(healthy = 3, disease = 1),
@@ -1822,7 +2050,7 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
       test_data  <- boruta_df[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
-      rf_model <- randomForest(x = train_data[, all_feat_cols], 
+      rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                                y = as.factor(train_data$condition),
                                mtry = mtry,
                                ntree = ntree, 
@@ -1831,7 +2059,7 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
                                importance = TRUE)
       
       # evaluate on test set
-      predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
+      predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
       
       # generate confusion matrix
       cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
@@ -1878,7 +2106,6 @@ bestparams_bal_acc = getBestPars(optObj)
 ########   RANDOM FOREST - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS FROM BAYESIAN OPTIMISATION - BAL_ACC  #######
 ######################################################################################################################
 
-
 # data to be used in the model
 str(boruta_df)
 
@@ -1886,7 +2113,7 @@ str(boruta_df)
 set.seed(1234)
 
 # column names for features to be included in model
-all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # create lists to store metrics
 feature_importances <- list() # list to store feature importances
@@ -1924,9 +2151,9 @@ for (r in 1:50) {
     test_data  <- boruta_df[test_idx, ] # testing data (fold f)
     
     # train random forest model
-    # x = all data in data.frame subset by all_feat_cols (predictor values)
+    # x = all data in data.frame subset by subset_feat_cols (predictor values)
     # y = target variable as factor
-    rf_model <- randomForest(x = train_data[, all_feat_cols], 
+    rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                              y = as.factor(train_data$condition), 
                              mtry = mtry_opt,
                              ntree = ntree_opt,
@@ -1935,8 +2162,8 @@ for (r in 1:50) {
                              importance = TRUE) 
     
     # evaluate on test set
-    predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
-    probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+    predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
+    probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
     
     # calculate AUC
     roc_obj <- roc(response = test_data$condition,
@@ -2080,6 +2307,14 @@ metric_summary
 ########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  #######
 #####################################################################################
 
+# data to be used in the model
+str(boruta_df)
+
+# set seed
+set.seed(1234)
+
+# column names for features to be included in model
+subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
 # best hyperparameter values determined by Bayesian optimization
 # optimal hyperparameter values
@@ -2100,7 +2335,7 @@ classwt_opt <- weight_grid[[label_keys[bestparams_bal_acc$classwt_label]]]
 # train the model on the full dataset
 
 set.seed(1234)
-final_model_bal_acc <- randomForest(x = boruta_df[, all_feat_cols], 
+final_model_bal_acc <- randomForest(x = boruta_df[, subset_feat_cols], 
                                     y = as.factor(boruta_df$condition), 
                                     mtry = mtry_opt,
                                     ntree = ntree_opt,
