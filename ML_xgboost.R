@@ -3143,7 +3143,20 @@ shap.plot.summary(shap_long)
 shap_mean_abs <- sort(colMeans(abs(shap_df)), decreasing = TRUE)
 shap_mean_abs <- as.data.frame(shap_mean_abs) # covert to data.frame
 shap_mean_abs$feature <- rownames(shap_mean_abs)
-shap_mean_abs
+shap_mean_abs <- shap_mean_abs %>% 
+  arrange(desc(shap_mean_abs))
+
+
+# recreate shap.plot.summary from treeshap (beeswarm-style plot) in ggpplot
+feature_order <- shap_mean_abs$feature
+shap_plot <- shap_long %>%
+  mutate(variable = factor(variable, levels = rev(feature_order)))
+
+ggplot(shap_plot, aes(x = value, y = variable, color = rfvalue)) +
+  geom_jitter(height = 0.2, alpha = 0.7, size = 1.2) +
+  scale_color_viridis_c(option = "plasma", direction = -1) + theme_minimal() +
+  labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
+       color = "Feature value")
 
 # plot mean absolute SHAP value per feature
 ggplot(shap_mean_abs, aes(x = reorder(feature, shap_mean_abs), y = shap_mean_abs)) +
@@ -3245,8 +3258,7 @@ abs_shap_by_class <- shap_df %>%
 
 # plot mean absolute SHAP value per class per feature
 ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
-  geom_col(position = "dodge") +
-  coord_flip() + theme_minimal() +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
   labs(title = "Class-specific mean absolute SHAP values",
        x = "Feature", y = "Mean abs SHAP", fill = "Condition")
 
@@ -3260,13 +3272,12 @@ shap_by_class <- shap_df %>%
 
 # plot mean SHAP value per class per feature
 ggplot(shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
-  geom_col(position = "dodge") +
-  coord_flip() + theme_minimal() +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
   labs(title = "Class-specific mean SHAP values",
        x = "Feature", y = "Mean SHAP", fill = "Condition")
 
 
-### how the impact of a driven feature on model prediction varies between healthy and disease samples
+### how the impact of a given feature on model prediction varies between healthy and disease samples
 # histogram of SHAP values
 ggplot(shap_df, aes(x = Lachnoclostridium_sp._YL32, fill = condition)) +
   geom_density(alpha = 0.6) + theme_minimal() +
