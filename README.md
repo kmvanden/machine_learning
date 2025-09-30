@@ -108,6 +108,12 @@ Boruta tracks the number of iterations where a feature has an importance higher 
 
 Boruta calls a new random forest model until all features are classified as Confirmed or Rejected, or until it hits the maximum number of iterations specified by ```maxRuns```. Tentative features are resolved by comparing their median importance across iterations to the median importance of the maximum shadow feature importance across iterations. If the importance of the Tentative feature is higher than the median of the maximum shadow feature, it is Confirmed, if it is lower, it is Rejected. 
 
+**Shapley values**: explain how each feature contributes the output of the model for a specific sample (i.e., how much each feature contributes to pushing a prediction of an individual sample above or below the average prediction) and can be aggregated across samples to explain how each feature influences the model overall (global feature importance). Computing exact Shapley values requires evaluating all possible subsets of features and is therefore exponential in complexity (2<sup>number of features</sup>). 
+
+Model-agnostic approximation methods (e.g., ```fastshap```) estimate Shapley values via Monte Carlo sampling, rather than computing them exactly. ```fastshap``` randomly samples a set of feature subsets (coalitions) that include or exclude the feature of interest (e.g., 100-1000 permutations rather than evaluating all possible combinations). 
+
+For each coalition, the values of the included features are fixed as the original values from the dataset and the values of the excluded features are randomly drawn from the data set. The marginal contribution of the feature of interest is the difference in model predictions between the coalitions with and without the feature of interest. The average of these marginal contributions across the sampled coalitions is the estimated Shapley value for that feature.
+
 ### Random Forest Hyperparameters
 Each tree is grown by recursively splitting the data at internal decision nodes, starting at the root node. With random forests, only a random subset of features is considered at each split to help decorrelate the trees and thereby increase the robustness of the ensemble.
 
@@ -179,18 +185,17 @@ Features within the data (especially in high dimensional datasets) can be irrele
 
 **Frequency**: the number of times a feature is used to split a node across all trees.
 
-Model-agnostic methods, like ```fastshap```, need to consider all possible subsets of features to compute Shapley values, which is exponential in complexity (2<sup>number of features</sup>) and therefore typically rely on approximation methods like Monte Carlo sampling.
-  - **Shapley values**: measure the average marginal contribution of each feature across all possible combinations of features (subsets) to the model prediction. They explain how each feature contributes the output of the model (prediction) for a specific sample (local interpretability) and can be aggregated across samples to explain how each feature influences the model overall (global feature importance).
+**Shapley values**: explain how each feature contributes the output of the model for a specific sample (i.e., how much each feature contributes to pushing a prediction of an individual sample above or below the average prediction) and can be aggregated across samples to explain how each feature influences the model overall (global feature importance). Computing exact Shapley values requires evaluating all possible subsets of features and is therefore exponential in complexity (2<sup>number of features</sup>). 
 
-Tree SHAP (SHapley Additive exPlanations) is an exact algorithm for computing SHAP values specifically for tree-based models. It uses the structure of decision trees (i.e., tree splits, leaf values, tree structure/sample paths and node cover) to compute Shapley values in polynomial time.
+Model-specific methods (e.g., TreeSHAP for tree-based models) use model-specific optimizations to make the computation practical. TreeSHAP is an exact algorithm that uses the structure of of decision trees (i.e., tree splits, leaf values, tree structure/sample paths and node cover) to compute SHAP (SHapley Additive exPlanations) values in polynomial time.
   - **Tree splits**: which features and thresholds are used at each node to route samples.
   - **Leaf values**: output value at terminal nodes (e.g., logit correction for binary classification).
   - **Tree structure/sample paths**: how each sample flows from root to leaf based on splits.
   - **Node cover**: the number of training samples that pass through each node.
 
-For each tree, Tree SHAP determines the change in prediction (leaf value) for a given sample caused by each feature used in a split along the path taken by that sample. The change in prediction is the difference between the prediction obtained using the actual path taken by the sample and the expected prediction without the feature (weighted by child node cover). 
+For each tree, TreeSHAP determines the change in prediction (leaf value) for a given sample caused by each feature used in a split along the path taken by that sample. The change in prediction is the difference between the prediction obtained using the actual path taken by the sample and the expected prediction without the feature (weighted by child node cover). 
 
-The difference in the prediction value is weighted by the probability that this split would be encountered by a subset of features that includes the feature used in the split (i.e., that the probability that a random subset of features contains the feature of interest and that this subset of features reaches that node). Tree SHAP derives this probability using node cover and the structure of the path from the root of that tree to the current node, specifically how many nodes occur before the current node and how many unique features are used in split decisions in these nodes. The SHAP values are summed across all trees in order to get the final SHAP values for per feature for each sample.
+The difference in the prediction value is weighted by the probability that this split would be encountered by a subset of features that includes the feature used in the split (i.e., that the probability that a random subset of features contains the feature of interest and that this subset of features reaches that node). TreeSHAP derives this probability using node cover and the structure of the path from the root of that tree to the current node, specifically how many nodes occur before the current node and how many unique features are used in split decisions in these nodes. The SHAP values are summed across all trees in order to get the final SHAP values for per feature for each sample.
 
 ### XGBoost Hyperparameters
 In XGBoost, important hyperparameters relate to weight regularization (L1 and L2), structural regularization and loss-guided post-tree pruning are used to prevent overfitting by discouraging large leaf weights and overly complex tree structure.
