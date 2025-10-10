@@ -16,9 +16,6 @@ library(viridis)
 library(ggrepel)
 
 
-# set.seed
-set.seed(1234)
-
 # setwd
 setwd("/Users/kristinvandenham/kmvanden/RStudio/")
 
@@ -2345,6 +2342,385 @@ final_model_bal_acc <- randomForest(x = boruta_df[, subset_feat_cols],
 
 # # save final model
 # saveRDS(final_model_bal_acc, file = "final_rf_model_metagen_bal_acc.rds")
+
+
+################################################################################################################
+########   RANDOM FOREST - NESTED CV - BORUTA FEATURE SELCTION AND BAYESIAN HYPERPARAMETER OPTIMISATION  #######
+################################################################################################################
+
+# data to be used in the model
+str(metagen)
+is.factor(metagen$condition) # condition needs to be a factor
+
+# set outer and inner loop parameters
+outer_repeats <- 10
+outer_folds <- 5
+boruta_repeats <- 25
+scoring_repeats <- 10 # (bayesOpt scoring function)
+
+# create list to store metrics
+stable_feature_frequencies <- list() # list to store stable feature selection frequencies from Boruta
+nested_best_params <- list() # list of optimal hyperparameter values
+feature_importances <- list() # list to store feature importances
+performance_metrics <- list() # list to store performance metrics
+feature_frequencies <- list() # list to store feature selection frequencies
+
+# register parallel backend
+doParallel::registerDoParallel(parallel::detectCores() - 1)
+
+# repeat cross-validation outer_repeats times
+for (r in 1:outer_repeats) {
+  
+  # create outer_folds-folds for cross-validation (stratified on condition)
+  set.seed(1234 + r*100)
+  outer_folds_list <- createFolds(metagen$condition, k = outer_folds, list = TRUE)
+  
+  # loop through the folds
+  for (f in 1:outer_folds) {
+    cat("Fold ", f, " of Repeat ", r, "\n")
+    
+    # split dataset into training and testing sets for the current fold
+    test_idx <- outer_folds_list[[f]] # test indices for the f-th fold
+    train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
+    test_data  <- metagen[test_idx, ] # testing data (fold f)
+    
+    boruta_metrics_list <- list() # list to store Boruta metrics
+    
+    for (b in 1:boruta_repeats) {
+      cat("Running Boruta:", b, "\n")
+      
+      set.seed(1234 + r*1000 + f*100 + b)
+      bor <- Boruta(condition ~ ., data = train_data, maxRuns = 250, ntree = 500, pValue = 0.01, doTrace = 0)
+      bor <- TentativeRoughFix(bor)
+      
+      # boruta metrics
+      imp_stats <- attStats(bor)
+      imp_stats$Feature <- rownames(imp_stats)
+      boruta_metrics_list[[b]] <- imp_stats
+    }
+    
+    # aggregate median importance
+    boruta_df <- do.call(rbind, boruta_metrics_list)
+    
+    # keep only confirmed features
+    confirmed_boruta_df <- boruta_df %>%
+      filter(decision == "Confirmed") %>%
+      group_by(Feature) %>%
+      summarise(mean_medianImp = mean(medianImp, na.rm = TRUE),
+                sd_medianImp = sd(medianImp, na.rm = TRUE),
+                count = n())
+    
+    # add proportion
+    confirmed_boruta_df$proportion <- confirmed_boruta_df$count/boruta_repeats 
+    
+    # keep only stable features
+    stable_feats <- confirmed_boruta_df %>% 
+      filter(proportion >= 0.4) 
+    selected_features <- stable_feats$Feature
+    
+    if (length(selected_features) < 2) {
+      cat(sprintf("Too few stable features: skipping Repeat %d Fold %d.\n", r, f))
+      next
+    }
+    
+    # save stability info for features
+    stable_feature_frequencies[[paste0("Repeat_", r, "_Fold_", f)]] <- stable_feats
+    
+    # subset train_data to just selected_features
+    train_subset <- train_data[, c("condition", selected_features)]
+    
+    # column names for features to be included in model
+    subset_feat_cols <- setdiff(colnames(train_subset), "condition")
+    
+    # create list of class weight settings
+    weight_grid <- list(high.h = c(healthy = 3, disease = 1),
+                        med.h = c(healthy = 2, disease = 1),
+                        equal = c(healthy = 1, disease = 1),
+                        med.d = c(healthy = 1, disease = 2))
+    
+    # define the set of categorical labels with numeric indices (classwt_label is a numeric index from 1 to 4)
+    label_keys <- c("high.h", "med.h", "equal", "med.d")
+    
+    # scoring function
+    scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
+      
+      # parameters
+      mtry <- as.integer(mtry)
+      ntree <- as.integer(ntree)
+      nodesize <- as.integer(nodesize)
+      
+      # convert numeric index of classwt_label back to character label for scoring function
+      classwt_label <- as.integer(classwt_label)
+      label_str <- label_keys[classwt_label]
+      classwt <- weight_grid[[label_str]]
+      
+      repeat_auc <- numeric(scoring_repeats)
+      
+      # loop over each repeat
+      for (sr in 1:scoring_repeats) {
+        
+        set.seed(123 + r*10000 + f*100 + sr)
+        #  create 5-folds for cross-validation (stratified on condition)
+        folds <- caret::createFolds(train_subset$condition, k = 5, list = TRUE, returnTrain = FALSE)
+        fold_aucs <- numeric(length(folds))
+        
+        # loop through the folds
+        for (sf in seq_along(folds)) {
+          
+          # splits the dataset into training and testing sets for the current fold
+          test_idx <- folds[[sf]] # test indices for the sf-th fold
+          train_data <- train_subset[-test_idx, ] # training data (all rows not in fold sf)
+          test_data  <- train_subset[test_idx, ] # testing data (fold sf)
+          
+          # train random forest model using full features to rank features
+          rf_model <- randomForest(x = train_data[, subset_feat_cols], 
+                                   y = as.factor(train_data$condition),
+                                   mtry = mtry,
+                                   ntree = ntree, 
+                                   nodesize = nodesize,
+                                   classwt = classwt,
+                                   importance = TRUE)
+          
+          # evaluate on test set
+          probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+          
+          # calculate AUC
+          roc_obj <- tryCatch({
+            roc(response = test_data$condition,
+                predictor = probabilities[, "disease"],
+                levels = c("healthy", "disease"),
+                direction = "<")
+          }, error = function(e) return(NULL))
+          
+          fold_aucs[sf] <- if (!is.null(roc_obj)) auc(roc_obj) else NA
+        }
+        
+        repeat_auc[sr] <- mean(fold_aucs, na.rm = TRUE)
+      }
+      
+      mean_auc <- mean(repeat_auc, na.rm = TRUE) # average across repeats
+      if (is.na(mean_auc) || is.nan(mean_auc)) {
+        mean_auc <- 0
+      }
+      return(list(Score = mean_auc)) # return mean auc values
+    }
+    
+    # define parameter bounds
+    bounds <- list(mtry = c(1L, length(selected_features)),
+                   ntree = c(100L, 1000L),
+                   nodesize = c(1L, 10L),
+                   classwt_label = c(1L, length(label_keys))) # numeric range for classwt_label
+    
+    # run Bayesian optimization
+    set.seed(1234 + r*1000000 + f*10000)
+    optObj <- bayesOpt(FUN = scoring_function,
+                       bounds = bounds,
+                       initPoints = 20,
+                       iters.n = 20,
+                       acq = "ei",
+                       parallel = TRUE,
+                       verbose = 1)
+    
+    # get best parameters
+    best_params = getBestPars(optObj)
+    nested_best_params[[paste0("Repeat_", r, "_Fold_", f)]] <- best_params
+    
+    # extract optimal hyperparameter values
+    mtry_opt <- best_params$mtry
+    ntree_opt <- best_params$ntree
+    nodesize_opt <- best_params$nodesize
+    classwt_opt <- weight_grid[[label_keys[best_params$classwt_label]]]
+    
+    # training and testing sets with selected_features
+    # train_subset <- train_data[, c("condition", selected_features)] # already assigned before scoring function
+    test_subset <- test_data[, c("condition", selected_features)]
+    
+    
+    # train random forest model on the train_subset data
+    set.seed(1234 + r*100000 + f*1000)
+    rf_model <- randomForest(x = train_subset[, subset_feat_cols], 
+                             y = as.factor(train_subset$condition), 
+                             mtry = mtry_opt,
+                             ntree = ntree_opt,
+                             nodesize = nodesize_opt,
+                             classwt = classwt_opt,
+                             importance = TRUE) 
+    
+    # evaluate on test set
+    predictions <- predict(rf_model, newdata = test_subset[, subset_feat_cols], type = "response") # predicted class labels for cm
+    probabilities <- predict(rf_model, newdata = test_subset[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+    
+    # calculate AUC
+    roc_obj <- roc(response = test_subset$condition,
+                   predictor = probabilities[, "disease"],
+                   levels = c("healthy", "disease"),
+                   direction = "<")
+    auc_value <- auc(roc_obj)
+    
+    # count how often each feature is used in the trees
+    tree_split_vars <- unlist(lapply(1:rf_model$ntree, function(t) {
+      tree <- getTree(rf_model, k = t, labelVar = TRUE)
+      as.character(tree$`split var`[tree$`split var` != "<leaf>"])
+    }))
+    
+    # count the occurrences of each feature
+    split_counts <- table(tree_split_vars)
+    
+    # generate confusion matrix
+    cm <- confusionMatrix(predictions, as.factor(test_subset$condition), positive = "disease")
+    
+    # store with repeat (r) and fold (f) index
+    # performance_metrics and feature_importances will be lists of 250 elements (50 repeats x 5 folds)
+    key <- paste0("Repeat_", r, "_Fold_", f)
+    feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
+    performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+    feature_importances[[key]] <- importance(rf_model)  # store feature importances
+  }
+}
+
+# unregister the backend
+registerDoSEQ()
+
+# calculate frequency of Boruta feature selection
+boruta_selected_summary <- bind_rows(stable_feature_frequencies, .id = "Repeat_Fold") %>%
+  group_by(Feature) %>%
+  summarise(n_selected_models = n(), # how many folds the feature appeared in
+            overall_selection_rate = n_selected_models/length(stable_feature_frequencies), # how stable the feature was cross nested cv
+            mean_medianImp = mean(mean_medianImp)) %>% # average importance of feature across nested cv
+  arrange(desc(overall_selection_rate))
+head(boruta_selected_summary, 20)
+
+### calculate feature frequencies
+feature_split_summary <- bind_rows(feature_frequencies, .id = "Repeat_Fold") %>%
+  rename(Feature = tree_split_vars) %>%
+  group_by(Feature) %>%
+  summarise(total_count = sum(Freq, na.rm = TRUE),
+            mean_count = mean(Freq, na.rm = TRUE),
+            n_models = n()) %>%
+  arrange(desc(total_count))
+head(feature_split_summary, 20)
+
+# calculate relative frequency of feature selection
+feature_split_summary <- feature_split_summary %>%
+  mutate(prop_models = n_models / length(feature_frequencies),
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+
+# total number of models where feature was used at least once
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = n_models)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features - model",
+       x = "Feature", y = "Number of models")
+
+# average number of times feature was used in a split per tree (across all models) 
+# 250 models (50 repeats x 5-fold CV) each with 500 trees (125,000 trees in total)
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features - split",
+       x = "Feature", y = "Average splits per tree")
+
+
+### calculate feature importances
+# combine all feature_importances data.frames into one data.frame
+all_features_importances <- do.call(rbind, lapply(names(feature_importances), function(name) {
+  df <- as.data.frame(feature_importances[[name]])
+  df$Feature <- rownames(df)
+  df$Repeat_Fold <- name
+  return(df)
+}))
+
+# group importance metrics by feature and sort by overall importance
+mean_importance <- all_features_importances %>%
+  group_by(Feature) %>%
+  summarise(mean_healthy = mean(healthy, na.rm = TRUE),
+            mean_disease = mean(disease, na.rm = TRUE),
+            mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
+            mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
+  arrange(desc(mean_MeanDecreaseAccuracy))
+head(mean_importance, 20)
+
+# group importance metrics by feature and sort by average selection per tree
+mean_importance <- left_join(mean_importance, feature_split_summary %>% 
+                               select(Feature, avg_per_tree), by = "Feature") %>%
+  arrange(desc(avg_per_tree))
+
+
+### plot features with highest MeanDecreaseAccuracy
+ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative features",
+       subtitle = "Lachnoclostridium sp. YL32",
+       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggplot(metagen, aes(x = Anaerobutyricum_hallii)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative features",
+       subtitle = "Anaerobutyricum hallii",
+       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggplot(metagen, aes(x = Clostridium_sp._M62.1)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative features",
+       subtitle = "Clostridium sp. M62.1",
+       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+
+### calculate performance statistics
+# create vectors to store metrics
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+auc_vals <- numeric()
+
+# extract metrics from the stored confusion matrices
+for (perf in performance_metrics) {
+  cm <- perf$cm
+  auc_val <- as.numeric(perf$auc[])
+  
+  # confusion matrix metrics
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+  auc_vals <- c(auc_vals, auc_val)
+}
+
+# combine metrics in a summary table
+metric_summary <- data.frame(mean_bal_acc = mean(balanced_accuracy, na.rm = TRUE),
+                             sd_bal_acc = sd(balanced_accuracy, na.rm = TRUE),
+                             mean_f1 = mean(f1_score, na.rm = TRUE),
+                             sd_f1 = sd(f1_score, na.rm = TRUE),
+                             mean_sens = mean(sensitivity, na.rm = TRUE),
+                             sd_sens = sd(sensitivity, na.rm = TRUE),
+                             mean_spec = mean(specificity, na.rm = TRUE),
+                             sd_spec = sd(specificity, na.rm = TRUE),
+                             mean_auc = mean(auc_vals, na.rm = TRUE),
+                             sd_auc = sd(auc_vals, na.rm = TRUE))
+metric_summary
+
+
+nested_best_params <- list() # list of optimal hyperparameter values
+
+
+### combine performance metrics and hyperparameter values into one dataframe
+hyperparam_perf <- do.call(rbind, lapply(names(nested_best_params), function(name) {
+  params <- nested_best_params[[name]]
+  auc_val <- performance_metrics[[name]]$auc
+  
+  data.frame(Repeat_Fold = name,
+             mtry = params$mtry,
+             ntree = params$ntree,
+             nodesize = params$nodesize,
+             classwt_label = params$classwt_label,
+             auc = auc_val)
+}))
+
+# sort by auc
+hyperparam_perf <- hyperparam_perf %>% arrange(desc(auc))
+top_model <- hyperparam_perf[1, ] # top model
 
 
 sessionInfo()
