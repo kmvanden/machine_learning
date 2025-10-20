@@ -82,7 +82,7 @@ metabo <- log2(metabo_imputed + 1e-6)
 metabo <- as.data.frame(metabo)
 all(rownames(meta) == rownames(metabo))
 metabo$sample_name <- rownames(metabo) # add column sample_name
-meta <- meta[, -c(1,4)] # remove meta columns that were used to format data.frames
+meta <- meta[, -c(3,4)] # remove meta columns that were used to format data.frames
 
 # merge metadata and feature table
 metabo_df <- merge(meta, metabo, by = "sample_name", all.x = TRUE)
@@ -533,7 +533,7 @@ str(metabo_df)
 # set seed
 set.seed(1234)
 
-n_repeats <- 25
+n_repeats <- 50
 boruta_metrics_list <- list() # list to store Boruta metrics
 
 for (i in 1:n_repeats) {
@@ -549,10 +549,10 @@ for (i in 1:n_repeats) {
 
 
 # aggregate median importance
-boruta_df <- do.call(rbind, boruta_metrics_list)
+boruta_feats <- do.call(rbind, boruta_metrics_list)
 
 # keep only confirmed features
-confirmed_boruta_df <- boruta_df %>%
+confirmed_boruta_df <- boruta_feats %>%
   filter(decision == "Confirmed") %>%
   group_by(Feature) %>%
   summarise(mean_medianImp = mean(medianImp, na.rm = TRUE),
@@ -1090,275 +1090,6 @@ metric_summary <- data.frame(mean_bal_acc = mean(balanced_accuracy, na.rm = TRUE
 metric_summary
 
 
-###########################################################################################
-########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS - AUC  #######
-###########################################################################################
-
-# data to be used in the model
-str(boruta_df)
-
-# set seed
-set.seed(1234)
-
-# column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
-
-# best hyperparameter values determined by Bayesian optimization
-# optimal hyperparameter values
-mtry_opt <- bestparams_auc$mtry
-ntree_opt <- bestparams_auc$ntree
-nodesize_opt <- bestparams_auc$nodesize
-
-# # create list of class weight settings
-# weight_grid <- list(high.h = c(healthy = 3, disease = 1),
-#                     med.h = c(healthy = 2, disease = 1),
-#                     equal = c(healthy = 1, disease = 1),
-#                     med.d = c(healthy = 1, disease = 2))
-# 
-# # define the set of categorical labels with numeric indices
-# label_keys <- c("high.h", "med.h", "equal", "med.d")
-classwt_opt <- weight_grid[[label_keys[bestparams_auc$classwt_label]]]
-
-# train the model on the full dataset
-
-set.seed(1234)
-final_model_auc <- randomForest(x = boruta_df[, subset_feat_cols], 
-                                y = as.factor(boruta_df$condition), 
-                                mtry = mtry_opt,
-                                ntree = ntree_opt,
-                                nodesize = nodesize_opt,
-                                classwt = classwt_opt,
-                                importance = TRUE)
-
-# # save final model
-# saveRDS(final_model_auc, file = "final_rf_model_metabo_auc.rds")
-
-
-######################################################################################
-###   XGBOOST LOGLOSS MODEL - FAST SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
-######################################################################################
-
-# function to get predicted disease probability
-pred_fun <- function(object, newdata) {
-  predict(object, newdata = newdata, type = "prob")[, "disease"]
-}
-
-# compute fast SHAP values
-set.seed(1234) # set seed
-
-shap_values <- fastshap::explain(object = final_model_auc,
-                                 X = boruta_df[, subset_feat_cols],
-                                 pred_wrapper = pred_fun,
-                                 nsim = 100, # number of Monte Carlo permutations
-                                 adjust = TRUE) # centered SHAP values (baseline + sum of SHAPs = prediction)
-shap_values <- as.data.frame(shap_values)     
-
-
-### summarize SHAP values
-shap_long <- shap_values %>%
-  mutate(ID = row_number()) %>%
-  pivot_longer(-ID, names_to = "feature", values_to = "value")
-
-# add rfvalues (abundance) to shap_long
-rfvalue_long <- boruta_df[, subset_feat_cols] %>%
-  mutate(ID = row_number()) %>%
-  pivot_longer(cols = -ID, names_to = "feature", values_to = "rfvalue")
-shap_long <- shap_long %>%
-  left_join(rfvalue_long, by = c("ID", "feature"))
-
-# mean shap values
-mean_shap_df <- shap_long %>%
-  dplyr::group_by(feature) %>%
-  dplyr::summarise(mean_shap = mean(value, na.rm = TRUE)) 
-
-# join mean abs values and mean values
-shap_summary <- shap_long %>%
-  dplyr::group_by(feature) %>%
-  dplyr::summarise(mean_abs_shap = mean(abs(value), na.rm = TRUE)) %>%
-  dplyr::arrange(desc(mean_abs_shap)) %>%
-  dplyr::left_join(mean_shap_df, by = "feature")
-
-# plot mean absolute SHAP value per feature
-ggplot(shap_summary, aes(x = reorder(feature, mean_abs_shap), y = mean_abs_shap)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "Mean absolute SHAP value", 
-       x = "Feature", y = "Mean absolute SHAP value")
-
-# plot mean SHAP value per feature
-ggplot(shap_summary, aes(x = reorder(feature, mean_shap), y = mean_shap)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "Mean SHAP value", 
-       x = "Feature", y = "Mean SHAP value")
-
-# recreate shap.plot.summary from treeshap (beeswarm-style plot)
-shap_plot <- shap_long %>%
-  dplyr::group_by(feature) %>%
-  dplyr::mutate(scaled_rfvalue = scale(rfvalue)[,1]) %>%
-  dplyr::ungroup() %>%
-  dplyr::mutate(feature = factor(feature, levels = rev(shap_summary$feature)))
-
-ggplot(shap_plot, aes(x = value, y = feature, color = scaled_rfvalue)) +
-  geom_jitter(height = 0.2, alpha = 0.7, size = 1.2) +
-  scale_color_viridis_c(option = "plasma", direction = -1) + theme_minimal() +
-  labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
-       color = "Feature value")
-
-
-### SHAP dependence plots (how SHAP values for a given feature vary as the input values for the feature vary)
-# wide table of log-transformed relative abundance
-rfvalue_wide <- boruta_df[, subset_feat_cols] %>%
-  mutate(ID = row_number())
-
-feature_name <- "beta.alanine"
-shap_dep <- shap_long %>% filter(feature == feature_name)
-plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
-interaction_feature <- "phosphate"
-
-ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
-  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
-  scale_color_distiller(palette = "RdBu", direction = 1) +
-  labs(title = paste("SHAP dependence plot for", feature_name),
-       x = paste(feature_name, "- log abun"), 
-       y = paste(feature_name, "- SHAP value"),
-       color = paste(interaction_feature, "- log abun"))
-  
-
-feature_name <- "myristate..14.0."
-shap_dep <- shap_long %>% filter(feature == feature_name)
-plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
-interaction_feature <- "X2.dimethylaminoethanol"
-
-ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
-  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
-  scale_color_distiller(palette = "RdBu", direction = 1) +
-  labs(title = paste("SHAP dependence plot for", feature_name),
-       x = paste(feature_name, "- log abun"), 
-       y = paste(feature_name, "- SHAP value"),
-       color = paste(interaction_feature, "- log abun"))
-
-
-### mean absolute SHAP value per class per feature
-shap_values$condition <- boruta_df$condition
-abs_shap_by_class <- shap_values %>%
-  pivot_longer(cols = -condition) %>%
-  group_by(condition, name) %>%
-  summarise(mean_abs_shap = mean(abs(value)), .groups = "drop")
-
-# plot mean absolute SHAP value per class per feature
-ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
-  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
-  labs(title = "Class-specific mean absolute SHAP values",
-       x = "Feature", y = "Mean abs SHAP", fill = "Condition")
-
-
-### mean SHAP value per class per feature
-shap_values$condition <- boruta_df$condition
-abs_shap_by_class <- shap_values %>%
-  pivot_longer(cols = -condition) %>%
-  group_by(condition, name) %>%
-  summarise(mean_shap = mean(value), .groups = "drop")
-
-# plot mean SHAP value per class per feature
-ggplot(abs_shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
-  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
-  labs(title = "Class-specific mean SHAP values",
-       x = "Feature", y = "Mean SHAP", fill = "Condition")
-
-
-### how the impact of a given feature on model prediction varies between healthy and disease samples
-# histogram of SHAP values
-ggplot(shap_values, aes(x = beta.alanine, fill = condition)) +
-  geom_density(alpha = 0.6) + theme_minimal() +
-  labs(title = "SHAP value distribution - beta.alanine",
-       x = "SHAP value", y = "Density", fill = "Condition")
-
-# boxplot of SHAP values
-ggplot(shap_values, aes(x = condition, y = beta.alanine, fill = condition)) +
-  geom_boxplot() + theme_minimal() +
-  labs(title = "SHAP values for beta.alanine by condition",
-       y = "SHAP value", x = "Condition")
-
-# box plot of log-abundance
-ggplot(boruta_df, aes(x = condition, y = beta.alanine, fill = condition)) +
-  geom_boxplot() + theme_minimal() +
-  labs(title = "Log abundance of beta.alanine by condition",
-       y = "Log Abundance", x = "Condition")
-
-
-# histogram of SHAP values
-ggplot(shap_values, aes(x = X.24683, fill = condition)) +
-  geom_density(alpha = 0.6) + theme_minimal() +
-  labs(title = "SHAP value distribution - X.24683",
-       x = "SHAP value", y = "Density", fill = "Condition")
-
-# boxplot of SHAP values
-ggplot(shap_values, aes(x = condition, y = X.24683, fill = condition)) +
-  geom_boxplot() + theme_minimal() +
-  labs(title = "SHAP values for X.24683 by condition",
-       y = "SHAP value", x = "Condition")
-
-# box plot of log-abundance
-ggplot(boruta_df, aes(x = condition, y = X.24683, fill = condition)) +
-  geom_boxplot() + theme_minimal() +
-  labs(title = "Log abundance of X.24683 by condition",
-       y = "Log abundance", x = "Condition")
-
-
-### SHAP values versus predicted probabilities
-shap_values$ID <- rownames(shap_values)
-prob <- as.data.frame(predict(final_model_auc, newdata = boruta_df[, subset_feat_cols], type = "prob"))
-shap_values$pred_prob <- prob$disease
-
-# myristate..14.0.
-pred_plot <- shap_values %>%
-  select(ID, myristate..14.0., condition, pred_prob)
-
-ggplot(pred_plot, aes(x = myristate..14.0., y = pred_prob, color = condition)) +
-  geom_point(alpha = 0.6) + theme_minimal() +
-  labs(title = "myristate..14.0. SHAP value versus prediction probability",
-       x = "SHAP value for myristate..14.0.", y = "Predicted probability (disease)")
-
-# beta.alanine
-pred_plot <- shap_values %>%
-  select(ID, beta.alanine, condition, pred_prob)
-
-ggplot(pred_plot, aes(x = beta.alanine, y = pred_prob, color = condition)) +
-  geom_point(alpha = 0.6) + theme_minimal() +
-  labs(title = "beta.alanine SHAP value versus prediction probability",
-       x = "SHAP value for beta.alanine", y = "Predicted probability (disease)")
-
-
-### plot SHAP values versus importance 
-importance <- as.data.frame(importance(final_model_auc))
-importance$feature <- rownames(importance)
-shap_import_df <- shap_summary %>%
-  left_join(importance, by = "feature")
-
-# plot SHAP values verus MeanDecreaseAccuracy
-ggplot(shap_import_df, aes(x = MeanDecreaseAccuracy, y = mean_abs_shap, label = feature)) +
-  geom_point(color = "steelblue", size = 3, alpha = 0.8) +
-  geom_text_repel(size = 3) + theme_minimal() +
-  labs(title = "Mean absolute SHAP versus mean decrease accuracy",
-       x = "Mean decrease accuracy",
-       y = "Mean absolute SHAP value")
-
-# plot SHAP values verus MeanDecreaseGini
-ggplot(shap_import_df, aes(x = MeanDecreaseGini, y = mean_abs_shap, label = feature)) +
-  geom_point(color = "steelblue", size = 3, alpha = 0.8) +
-  geom_text_repel(size = 3) + theme_minimal() +
-  labs(title = "Mean absolute SHAP versus mean decrease in Gini",
-       x = "Mean decrease in Gini",
-       y = "Mean absolute SHAP value")
-
-
-### fastshap does not calculate second-order SHAP effects
-# partial dependence (PDP) interaction plots (how much each feature interacts with others)
-library(iml)
-predictor <- Predictor$new(final_model_auc, data = boruta_df[, subset_feat_cols], y = boruta_df$condition, type = "prob")
-interaction_strength <- Interaction$new(predictor)
-plot(interaction_strength)
-
-
 ####################################################################################################################
 ########   RANDOM FOREST - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - PARALLELIZATON OF BAYES OPT - BAL_ACC  #######
 ####################################################################################################################
@@ -1670,9 +1401,9 @@ metric_summary <- data.frame(mean_bal_acc = mean(balanced_accuracy, na.rm = TRUE
 metric_summary
 
 
-#####################################################################################
-########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  #######
-#####################################################################################
+##################################################################
+###   RANDOM FOREST - OPTIMAL HYPERPARAMETER VALUES - CLASSWT  ###
+##################################################################
 
 # data to be used in the model
 str(boruta_df)
@@ -1680,38 +1411,1151 @@ str(boruta_df)
 # set seed
 set.seed(1234)
 
-# column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+# column names for features to be included in model (full predictor set)
+all_feat_cols <- setdiff(colnames(boruta_df), "condition")
 
-# best hyperparameter values determined by Bayesian optimization
-# optimal hyperparameter values
-mtry_opt <- bestparams_bal_acc$mtry
-ntree_opt <- bestparams_bal_acc$ntree
-nodesize_opt <- bestparams_bal_acc$nodesize
+# create list of class weight settings
+weight_grid <- list(high.h = c(healthy = 3, disease = 1),
+                    med.h = c(healthy = 2, disease = 1),
+                    equal = c(healthy = 1, disease = 1),
+                    med.d = c(healthy = 1, disease = 2))
 
-# # create list of class weight settings
-# weight_grid <- list(high.h = c(healthy = 3, disease = 1),
-#                     med.h = c(healthy = 2, disease = 1),
-#                     equal = c(healthy = 1, disease = 1),
-#                     med.d = c(healthy = 1, disease = 2))
-# 
-# # define the set of categorical labels with numeric indices
-# label_keys <- c("high.h", "med.h", "equal", "med.d")
-classwt_opt <- weight_grid[[label_keys[bestparams_bal_acc$classwt_label]]]
+# create list to store performance metrics
+performance_metrics <- list() # list to store performance metrics
+
+# loop for class weight
+for (w in names(weight_grid)) {
+  classwt <- weight_grid[[w]]
+  cat("Class Weight:", w, "\n")
+  
+  # repeat cross-validation 50 times
+  for (r in 1:50) {
+    cat("Repeat:", r, "\n")
+    
+    # create 5-folds for cross-validation (stratified on condition)
+    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    
+    # loop through the folds
+    for (f in 1:5) {
+      
+      # splits the dataset into training and testing sets for the current fold
+      test_idx <- folds[[f]] # test indices for the f-th fold
+      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
+      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      
+      # train random forest model using full features to rank features
+      rf_model <- randomForest(x = train_data[, all_feat_cols], 
+                               y = as.factor(train_data$condition),
+                               ntree = 500, importance = TRUE, classwt = classwt)
+      
+      # evaluate on test set
+      predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
+      probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+      
+      # generate confusion matrix
+      cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+      
+      # calculate AUC
+      roc_obj <- roc(response = test_data$condition,
+                     predictor = probabilities[, "disease"],
+                     levels = c("healthy", "disease"),
+                     direction = "<")
+      auc_value <- auc(roc_obj)
+      
+      # store with repeat (r) and fold (f) index
+      key <- paste0(w, "_Repeat_", r, "_Fold_", f)
+      performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+    }
+  }
+}
+
+### calculate performance statistics
+# create vectors to store metrics
+weight_setting <- character()
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+auc_vals <- numeric()
+
+# loop through each stored confusion matrix + name
+for (key in names(performance_metrics)) {
+  result <- performance_metrics[[key]]
+  cm <- result$cm
+  auc <- result$auc
+  
+  # extract weight setting from key name
+  cw <- str_extract(key, "^[^_]+_[^_]+_[^_]+") # extract everything before the first underscore
+  
+  weight_setting <- c(weight_setting, cw)
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+  auc_vals <- c(auc_vals, auc)
+}
+
+# combine metrics in a summary table
+results_df <- data.frame(weight_setting = weight_setting,
+                         bal_acc = balanced_accuracy,
+                         f1 = f1_score,
+                         sens = sensitivity,
+                         spec = specificity,
+                         auc = auc_vals)
+
+# group by weight_setting and summarise
+metric_summary <- results_df %>%
+  group_by(weight_setting) %>%
+  summarise(mean_bal_acc = mean(bal_acc, na.rm = TRUE),
+            sd_bal_acc = sd(bal_acc, na.rm = TRUE),
+            mean_f1 = mean(f1, na.rm = TRUE),
+            sd_f1 = sd(f1, na.rm = TRUE),
+            mean_sens = mean(sens, na.rm = TRUE),
+            sd_sens = sd(sens, na.rm = TRUE),
+            mean_spec = mean(spec, na.rm = TRUE),
+            sd_spec = sd(spec, na.rm = TRUE),
+            mean_auc = mean(auc, na.rm = TRUE),
+            sd_auc = sd(auc, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(desc(weight_setting))
+metric_summary
+
+# add weight column for plotting
+metric_summary$weight <- str_extract(metric_summary$weight_setting, "^[^_]+")
+metric_summary$weight <- factor(metric_summary$weight, levels = c("high.h", "med.h", "equal", "med.d"))
+
+
+# balanced accuracy
+ggplot(metric_summary, aes(x = weight, y = mean_bal_acc, fill = weight)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("high.h" = "skyblue", "med.h" = "pink", "equal" = "plum", "med.d" = "salmon1")) +
+  labs(title = "Performance versus class weights", 
+       y = "Balanced accuracy", x = "Class weights") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# f1 score
+ggplot(metric_summary, aes(x = weight, y = mean_f1, fill = weight)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("high.h" = "skyblue", "med.h" = "pink", "equal" = "plum", "med.d" = "salmon1")) +
+  labs(title = "Performance versus class weights", 
+       y = "F1 score", x = "Class weights") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# sensitivity
+ggplot(metric_summary, aes(x = weight, y = mean_sens, fill = weight)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("high.h" = "skyblue", "med.h" = "pink", "equal" = "plum", "med.d" = "salmon1")) +
+  labs(title = "Performance versus class weights", 
+       y = "Sensitivity", x = "Class weights") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# specificity
+ggplot(metric_summary, aes(x = weight, y = mean_spec, fill = weight)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("high.h" = "skyblue", "med.h" = "pink", "equal" = "plum", "med.d" = "salmon1")) +
+  labs(title = "Performance versus class weights", 
+       y = "Specificity", x = "Class weights") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# auc
+ggplot(metric_summary, aes(x = weight, y = mean_auc, fill = weight)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("high.h" = "skyblue", "med.h" = "pink", "equal" = "plum", "med.d" = "salmon1")) +
+  labs(title = "Performance versus class weights", 
+       y = "AUC", x = "Class weights") + 
+  theme_minimal() + theme(legend.position = "none")
+
+
+################################################################
+###   RANDOM FOREST - OPTIMAL HYPERPARAMETER VALUES - NTREE  ###
+################################################################
+
+# data to be used in the model
+str(boruta_df)
+
+# set seed
+set.seed(1234)
+
+# column names for features to be included in model (full predictor set)
+all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+
+# ntree values to test
+ntree_values <- c(500, 1000, 2000)
+
+# create list to store performance metrics
+performance_metrics <- list() # list to store performance metrics
+
+# loop for ntree values
+for (n in ntree_values) {
+  cat("ntree =", n, "\n")
+  
+  # repeat cross-validation 50 times
+  for (r in 1:50) {
+    cat("Repeat:", r, "\n")
+    
+    # create 5-folds for cross-validation (stratified on condition)
+    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    
+    # loop through the folds
+    for (f in 1:5) {
+      
+      # splits the dataset into training and testing sets for the current fold
+      test_idx <- folds[[f]] # test indices for the f-th fold
+      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
+      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      
+      # train random forest model using full features to rank features
+      rf_model <- randomForest(x = train_data[, all_feat_cols], 
+                               y = as.factor(train_data$condition),
+                               ntree = n, importance = TRUE)
+      
+      # evaluate on test set
+      predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
+      probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+      
+      # generate confusion matrix
+      cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+      
+      # calculate AUC
+      roc_obj <- roc(response = test_data$condition,
+                     predictor = probabilities[, "disease"],
+                     levels = c("healthy", "disease"),
+                     direction = "<")
+      auc_value <- auc(roc_obj)
+      
+      # store with repeat (r) and fold (f) index
+      key <- paste0("ntree_", n, "_Repeat_", r, "_Fold_", f)
+      performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+    }
+  }
+}
+
+### calculate performance statistics
+# create vectors to store metrics
+ntree_number <- character()
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+auc_vals <- numeric()
+
+# loop through each stored confusion matrix + name
+for (key in names(performance_metrics)) {
+  result <- performance_metrics[[key]]
+  cm <- result$cm
+  auc <- result$auc
+  
+  # extract ntree name
+  nt <- str_extract(key, "^[^_]+_[^_]+_[^_]+_[^_]+") 
+  
+  ntree_number <- c(ntree_number, nt)
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+  auc_vals <- c(auc_vals, auc)
+}
+
+# combine metrics in a summary table
+results_df <- data.frame(ntree_number = ntree_number,
+                         bal_acc = balanced_accuracy,
+                         f1 = f1_score,
+                         sens = sensitivity,
+                         spec = specificity,
+                         auc = auc_vals)
+
+# summary of performance metrics
+metric_summary <- results_df %>%
+  group_by(ntree_number) %>%
+  summarise(mean_bal_acc = mean(bal_acc, na.rm = TRUE),
+            sd_bal_acc = sd(bal_acc, na.rm = TRUE),
+            mean_f1 = mean(f1, na.rm = TRUE),
+            sd_f1 = sd(f1, na.rm = TRUE),
+            mean_sens = mean(sens, na.rm = TRUE),
+            sd_sens = sd(sens, na.rm = TRUE),
+            mean_spec = mean(spec, na.rm = TRUE),
+            sd_spec = sd(spec, na.rm = TRUE),
+            mean_auc = mean(auc, na.rm = TRUE),
+            sd_auc = sd(auc, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(ntree_number)
+
+# add ntree column for plotting
+metric_summary$ntree <- str_extract(metric_summary$ntree_number, "(?<=ntree_)\\d+")
+metric_summary$ntree <- factor(metric_summary$ntree, levels = c("500", "1000", "2000"))
+
+# balanced accuracy
+ggplot(metric_summary, aes(x = ntree, y = mean_bal_acc, fill = ntree)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("500" = "skyblue", "1000" = "pink", "2000" = "plum")) +
+  labs(title = "Performance versus number of trees", 
+       y = "Balanced accuracy", x = "Number of trees") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# f1 score
+ggplot(metric_summary, aes(x = ntree, y = mean_f1, fill = ntree)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("500" = "skyblue", "1000" = "pink", "2000" = "plum")) +
+  labs(title = "Performance versus number of trees", 
+       y = "F1 score", x = "Number of trees") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# sensitivity
+ggplot(metric_summary, aes(x = ntree, y = mean_sens, fill = ntree)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("500" = "skyblue", "1000" = "pink", "2000" = "plum")) +
+  labs(title = "Performance versus number of trees", 
+       y = "Sensitivity", x = "Number of trees") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# specificity
+ggplot(metric_summary, aes(x = ntree, y = mean_spec, fill = ntree)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("500" = "skyblue", "1000" = "pink", "2000" = "plum")) +
+  labs(title = "Performance versus number of trees", 
+       y = "Specificity", x = "Number of trees") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# auc
+ggplot(metric_summary, aes(x = ntree, y = mean_auc, fill = ntree)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("500" = "skyblue", "1000" = "pink", "2000" = "plum")) +
+  labs(title = "Performance versus number of trees", 
+       y = "AUC", x = "Number of trees") + 
+  theme_minimal() + theme(legend.position = "none")
+
+
+###############################################################
+###   RANDOM FOREST - OPTIMAL HYPERPARAMETER VALUES - MTRY  ###
+###############################################################
+
+# data to be used in the model
+str(boruta_df)
+
+# set seed
+set.seed(1234)
+
+# column names for features to be included in model (full predictor set)
+all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+
+# mtry values to test
+mtry_values <- c(5, 10, 15, 20, 25)
+
+# create list to store performance metrics
+performance_metrics <- list() # list to store performance metrics
+
+# loop for mtry values
+for (m in mtry_values) {
+  cat("mtry =", m, "\n")
+  
+  # repeat cross-validation 50 times
+  for (r in 1:50) {
+    cat("Repeat:", r, "\n")
+    
+    # create 5-folds for cross-validation (stratified on condition)
+    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    
+    # loop through the folds
+    for (f in 1:5) {
+      
+      # splits the dataset into training and testing sets for the current fold
+      test_idx <- folds[[f]] # test indices for the f-th fold
+      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
+      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      
+      # train random forest model using full features to rank features
+      rf_model <- randomForest(x = train_data[, all_feat_cols], 
+                               y = as.factor(train_data$condition),
+                               ntree = 500, importance = TRUE, mtry = m)
+      
+      # evaluate on test set
+      predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
+      probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+      
+      # generate confusion matrix
+      cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+      
+      # calculate AUC
+      roc_obj <- roc(response = test_data$condition,
+                     predictor = probabilities[, "disease"],
+                     levels = c("healthy", "disease"),
+                     direction = "<")
+      auc_value <- auc(roc_obj)
+      
+      # store with repeat (r) and fold (f) index
+      key <- paste0("mtry_", m, "_Repeat_", r, "_Fold_", f)
+      performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+    }
+  }
+}
+
+### calculate performance statistics
+# create vectors to store metrics
+mtry_number <- character()
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+auc_vals <- numeric()
+
+# loop through each stored confusion matrix + name
+for (key in names(performance_metrics)) {
+  result <- performance_metrics[[key]]
+  cm <- result$cm
+  auc <- result$auc
+  
+  # extract mtry name
+  mt <- str_extract(key, "^[^_]+_[^_]+_[^_]+_[^_]+") 
+  
+  mtry_number <- c(mtry_number, mt)
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+  auc_vals <- c(auc_vals, auc)
+}
+
+# combine metrics in a summary table
+results_df <- data.frame(mtry_number = mtry_number,
+                         bal_acc = balanced_accuracy,
+                         f1 = f1_score,
+                         sens = sensitivity,
+                         spec = specificity,
+                         auc = auc_vals)
+
+# summary of performance metrics
+metric_summary <- results_df %>%
+  group_by(mtry_number) %>%
+  summarise(mean_bal_acc = mean(bal_acc, na.rm = TRUE),
+            sd_bal_acc = sd(bal_acc, na.rm = TRUE),
+            mean_f1 = mean(f1, na.rm = TRUE),
+            sd_f1 = sd(f1, na.rm = TRUE),
+            mean_sens = mean(sens, na.rm = TRUE),
+            sd_sens = sd(sens, na.rm = TRUE),
+            mean_spec = mean(spec, na.rm = TRUE),
+            sd_spec = sd(spec, na.rm = TRUE),
+            mean_auc = mean(auc, na.rm = TRUE),
+            sd_auc = sd(auc, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(mtry_number)
+
+# add ntree column for plotting
+metric_summary$mtry <- str_extract(metric_summary$mtry_number, "(?<=mtry_)\\d+")
+metric_summary$mtry <- factor(metric_summary$mtry, levels = c("5", "10", "15", "20", "25"))
+
+# balanced accuracy
+ggplot(metric_summary, aes(x = mtry, y = mean_bal_acc, fill = mtry)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("5" = "skyblue", "10" = "deepskyblue3", "15" = "skyblue3", "20" = "deepskyblue4", "25" = "skyblue4")) +
+  labs(title = "Performance versus number of features at splits", 
+       y = "Balanced accuracy", x = "Number of features at splits") + 
+  theme_minimal() + theme(legend.position = "none")
+
+
+# f1 score
+ggplot(metric_summary, aes(x = mtry, y = mean_f1, fill = mtry)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("5" = "skyblue", "10" = "deepskyblue3", "15" = "skyblue3", "20" = "deepskyblue4", "25" = "skyblue4")) +
+  labs(title = "Performance versus number of features at splits", 
+       y = "F1 score", x = "Number of features at splits") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# sensitivity
+ggplot(metric_summary, aes(x = mtry, y = mean_sens, fill = mtry)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("5" = "skyblue", "10" = "deepskyblue3", "15" = "skyblue3", "20" = "deepskyblue4", "25" = "skyblue4")) +
+  labs(title = "Performance versus number of features at splits", 
+       y = "Sensitivity", x = "Number of features at splits") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# specificity
+ggplot(metric_summary, aes(x = mtry, y = mean_spec, fill = mtry)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("5" = "skyblue", "10" = "deepskyblue3", "15" = "skyblue3", "20" = "deepskyblue4", "25" = "skyblue4")) +
+  labs(title = "Performance versus number of features at splits", 
+       y = "Specificity", x = "Number of features at splits") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# auc
+ggplot(metric_summary, aes(x = mtry, y = mean_auc, fill = mtry)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("5" = "skyblue", "10" = "deepskyblue3", "15" = "skyblue3", "20" = "deepskyblue4", "25" = "skyblue4")) +
+  labs(title = "Performance versus number of features at splits", 
+       y = "AUC", x = "Number of features at splits") + 
+  theme_minimal() + theme(legend.position = "none")
+
+
+###################################################################
+###   RANDOM FOREST - OPTIMAL HYPERPARAMETER VALUES - NODESIZE  ###
+###################################################################
+
+# data to be used in the model
+str(boruta_df)
+
+# set seed
+set.seed(1234)
+
+# column names for features to be included in model (full predictor set)
+all_feat_cols <- setdiff(colnames(boruta_df), "condition")
+
+# nodesize values to test
+nodesize_values <- c(1, 5, 10, 20, 30)
+
+# create list to store performance metrics
+performance_metrics <- list() # list to store performance metrics
+
+# loop for nodesize values
+for (n in nodesize_values) {
+  cat("nodesize =", n, "\n")
+  
+  # repeat cross-validation 50 times
+  for (r in 1:50) {
+    cat("Repeat:", r, "\n")
+    
+    # create 5-folds for cross-validation (stratified on condition)
+    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    
+    # loop through the folds
+    for (f in 1:5) {
+      
+      # splits the dataset into training and testing sets for the current fold
+      test_idx <- folds[[f]] # test indices for the f-th fold
+      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
+      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      
+      # train random forest model using full features to rank features
+      rf_model <- randomForest(x = train_data[, all_feat_cols], 
+                               y = as.factor(train_data$condition),
+                               ntree = 500, importance = TRUE, nodesize = n)
+      
+      # evaluate on test set
+      predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
+      probabilities <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+      
+      # generate confusion matrix
+      cm <- confusionMatrix(predictions, as.factor(test_data$condition), positive = "disease")
+      
+      # calculate AUC
+      roc_obj <- roc(response = test_data$condition,
+                     predictor = probabilities[, "disease"],
+                     levels = c("healthy", "disease"),
+                     direction = "<")
+      auc_value <- auc(roc_obj)
+      
+      # store with repeat (r) and fold (f) index
+      key <- paste0("nodesize_", n, "_Repeat_", r, "_Fold_", f)
+      performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+    }
+  }
+}
+
+### calculate performance statistics
+# create vectors to store metrics
+node_number <- character()
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+auc_vals <- numeric()
+
+# loop through each stored confusion matrix + name
+for (key in names(performance_metrics)) {
+  result <- performance_metrics[[key]]
+  cm <- result$cm
+  auc <- result$auc
+  
+  # extract mtry name
+  ns <- str_extract(key, "^[^_]+_[^_]+_[^_]+_[^_]+") 
+  
+  node_number <- c(node_number, ns)
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+  auc_vals <- c(auc_vals, auc)
+}
+
+# combine metrics in a summary table
+results_df <- data.frame(node_number = node_number,
+                         bal_acc = balanced_accuracy,
+                         f1 = f1_score,
+                         sens = sensitivity,
+                         spec = specificity,
+                         auc = auc_vals)
+
+# summary of performance metrics
+metric_summary <- results_df %>%
+  group_by(node_number) %>%
+  summarise(mean_bal_acc = mean(bal_acc, na.rm = TRUE),
+            sd_bal_acc = sd(bal_acc, na.rm = TRUE),
+            mean_f1 = mean(f1, na.rm = TRUE),
+            sd_f1 = sd(f1, na.rm = TRUE),
+            mean_sens = mean(sens, na.rm = TRUE),
+            sd_sens = sd(sens, na.rm = TRUE),
+            mean_spec = mean(spec, na.rm = TRUE),
+            sd_spec = sd(spec, na.rm = TRUE),
+            mean_auc = mean(auc, na.rm = TRUE),
+            sd_auc = sd(auc, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(node_number)
+
+# add ntree column for plotting
+metric_summary$nodesize <- str_extract(metric_summary$node_number, "(?<=nodesize_)\\d+")
+metric_summary$nodesize <- factor(metric_summary$nodesize, levels = c("1", "5", "10", "20", "30"))
+
+# balanced accuracy
+ggplot(metric_summary, aes(x = nodesize, y = mean_bal_acc, fill = nodesize)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("1" = "skyblue", "5" = "deepskyblue3", "10" = "skyblue3", "20" = "deepskyblue4", "30" = "skyblue4")) +
+  labs(title = "Performance versus node size", 
+       y = "Balanced accuracy", x = "Node size") + 
+  theme_minimal() + theme(legend.position = "none")
+
+
+# f1 score
+ggplot(metric_summary, aes(x = nodesize, y = mean_f1, fill = nodesize)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("1" = "skyblue", "5" = "deepskyblue3", "10" = "skyblue3", "20" = "deepskyblue4", "30" = "skyblue4")) +
+  labs(title = "Performance versus node size", 
+       y = "F1 score", x = "Node size") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# sensitivity
+ggplot(metric_summary, aes(x = nodesize, y = mean_sens, fill = nodesize)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("1" = "skyblue", "5" = "deepskyblue3", "10" = "skyblue3", "20" = "deepskyblue4", "30" = "skyblue4")) +
+  labs(title = "Performance versus node size", 
+       y = "Sensitivity", x = "Node size") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# specificity
+ggplot(metric_summary, aes(x = nodesize, y = mean_spec, fill = nodesize)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("1" = "skyblue", "5" = "deepskyblue3", "10" = "skyblue3", "20" = "deepskyblue4", "30" = "skyblue4")) +
+  labs(title = "Performance versus node size", 
+       y = "Specificity", x = "Node size") + 
+  theme_minimal() + theme(legend.position = "none")
+
+# auc
+ggplot(metric_summary, aes(x = nodesize, y = mean_auc, fill = nodesize)) +
+  geom_boxplot(width = 0.6, alpha = 0.5, outlier.size = 1) + 
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("1" = "skyblue", "5" = "deepskyblue3", "10" = "skyblue3", "20" = "deepskyblue4", "30" = "skyblue4")) +
+  labs(title = "Performance versus node size", 
+       y = "AUC", x = "Node size") + 
+  theme_minimal() + theme(legend.position = "none")
+
+
+#######################################################################
+########   RANDOM FOREST - NESTED CV - BORUTA FEATURE SELCTION  #######
+#######################################################################
+
+# data to be used in the model
+str(metabo_df)
+is.factor(metabo_df$condition) # condition needs to be a factor
+
+# set outer and inner loop parameters
+outer_repeats <- 10
+outer_folds <- 5
+boruta_repeats <- 50
+
+# create list to store metrics
+stable_feature_frequencies <- list() # list to store stable feature selection frequencies from Boruta
+feature_importances <- list() # list to store feature importances
+performance_metrics <- list() # list to store performance metrics
+feature_frequencies <- list() # list to store feature selection frequencies
+
+# outer loop
+for (r in 1:outer_repeats) {
+  
+  # create outer_folds-folds for cross-validation (stratified on condition)
+  set.seed(1234 + r*100)
+  outer_folds_list <- createFolds(metabo_df$condition, k = outer_folds, list = TRUE)
+  
+  # loop through the folds
+  for (f in 1:outer_folds) {
+    cat("Fold ", f, " of Repeat ", r, "\n")
+    
+    # split dataset into training and testing sets for the current fold
+    test_idx <- outer_folds_list[[f]] # test indices for the f-th fold
+    train_data <- metabo_df[-test_idx, ] # training data (all rows not in fold f)
+    test_data  <- metabo_df[test_idx, ] # testing data (fold f)
+    
+    ### Boruta feature selection
+    boruta_metrics_list <- list() # list to store Boruta metrics
+    
+    for (b in 1:boruta_repeats) {
+      set.seed(1234 + r*1000 + f*100 + b)
+      cat("Running Boruta:", b, "\n")
+      
+      bor <- Boruta(condition ~ ., data = train_data, maxRuns = 250, ntree = 500, pValue = 0.01, doTrace = 0)
+      bor <- TentativeRoughFix(bor)
+      
+      # boruta metrics
+      imp_stats <- attStats(bor)
+      imp_stats$Feature <- rownames(imp_stats)
+      boruta_metrics_list[[b]] <- imp_stats
+    }
+    
+    # aggregate median importance
+    boruta_df <- do.call(rbind, boruta_metrics_list)
+    
+    # keep only confirmed features
+    confirmed_boruta_df <- boruta_df %>%
+      filter(decision == "Confirmed") %>%
+      group_by(Feature) %>%
+      summarise(mean_medianImp = mean(medianImp, na.rm = TRUE),
+                sd_medianImp = sd(medianImp, na.rm = TRUE),
+                count = n())
+    
+    # add proportion
+    confirmed_boruta_df$proportion <- confirmed_boruta_df$count/boruta_repeats 
+    
+    # keep only stable features 
+    stable_feats <- confirmed_boruta_df %>% 
+      filter(proportion >= 0.3) 
+    selected_features <- stable_feats$Feature 
+    
+    if (length(selected_features) < 2) { 
+      cat(sprintf("Too few stable features: skipping Repeat %d Fold %d.\n", r, f)) 
+      next 
+    }
+    
+    # save stability info for features
+    stable_feature_frequencies[[paste0("Repeat_", r, "_Fold_", f)]] <- stable_feats
+    
+    # subset train_data and test_data to just selected_features
+    train_subset <- train_data[, c("condition", selected_features)]
+    test_subset <- test_data[, c("condition", selected_features)]
+    
+    # column names for features to be included in model
+    subset_feat_cols <- setdiff(colnames(train_subset), "condition")
+    
+    # train random forest model on the train_subset data
+    set.seed(1234 + r*100000 + f*1000)
+    rf_model <- randomForest(x = train_subset[, subset_feat_cols], 
+                             y = as.factor(train_subset$condition), 
+                             mtry = round(sqrt(length(selected_features))),
+                             ntree = 500,
+                             nodesize = 5,
+                             classwt = c(healthy = 2, disease = 1),
+                             importance = TRUE) 
+    
+    # evaluate on test set
+    predictions <- predict(rf_model, newdata = test_subset[, subset_feat_cols], type = "response") # predicted class labels for cm
+    probabilities <- predict(rf_model, newdata = test_subset[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+    
+    # calculate AUC
+    roc_obj <- roc(response = test_subset$condition,
+                   predictor = probabilities[, "disease"],
+                   levels = c("healthy", "disease"),
+                   direction = "<")
+    auc_value <- auc(roc_obj)
+    
+    # count how often each feature is used in the trees
+    tree_split_vars <- unlist(lapply(1:rf_model$ntree, function(t) {
+      tree <- getTree(rf_model, k = t, labelVar = TRUE)
+      as.character(tree$`split var`[tree$`split var` != "<leaf>"])
+    }))
+    
+    # count the occurrences of each feature
+    split_counts <- table(tree_split_vars)
+    
+    # generate confusion matrix
+    cm <- confusionMatrix(predictions, as.factor(test_subset$condition), positive = "disease")
+    
+    # store with repeat (r) and fold (f) index
+    key <- paste0("Repeat_", r, "_Fold_", f)
+    feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
+    performance_metrics[[key]] <- list(cm = cm, auc = auc_value) # store performance metrics
+    feature_importances[[key]] <- importance(rf_model)  # store feature importances
+  }
+}
+
+# calculate frequency of Boruta feature selection
+boruta_selected_summary <- bind_rows(stable_feature_frequencies, .id = "Repeat_Fold") %>%
+  group_by(Feature) %>%
+  summarise(n_selected_models = n(), # how many folds the feature appeared in
+            overall_selection_rate = n_selected_models/length(stable_feature_frequencies), # how stable the feature was cross nested cv
+            mean_medianImp = mean(mean_medianImp)) %>% # average importance of feature across nested cv
+  arrange(desc(overall_selection_rate))
+head(as.data.frame(boruta_selected_summary), 20)
+
+### calculate feature frequencies
+feature_split_summary <- bind_rows(feature_frequencies, .id = "Repeat_Fold") %>%
+  rename(Feature = tree_split_vars) %>%
+  group_by(Feature) %>%
+  summarise(total_count = sum(Freq, na.rm = TRUE),
+            mean_count = mean(Freq, na.rm = TRUE),
+            n_models = n()) %>%
+  arrange(desc(total_count))
+
+# calculate relative frequency of feature selection
+feature_split_summary <- feature_split_summary %>%
+  mutate(prop_models = n_models / length(feature_frequencies),
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+head(as.data.frame(feature_split_summary), 20)
+
+# total number of models where feature was used at least once
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = n_models)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features - model",
+       x = "Feature", y = "Number of models")
+
+# average number of times feature was used in a split per tree (across all models) 
+# 250 models (50 repeats x 5-fold CV) each with 500 trees (125,000 trees in total)
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Top 30 most frequently selected features - split",
+       x = "Feature", y = "Average splits per tree")
+
+
+### calculate feature importances
+# combine all feature_importances data.frames into one data.frame
+all_features_importances <- do.call(rbind, lapply(names(feature_importances), function(name) {
+  df <- as.data.frame(feature_importances[[name]])
+  df$Feature <- rownames(df)
+  df$Repeat_Fold <- name
+  return(df)
+}))
+
+# group importance metrics by feature and sort by overall importance
+mean_importance <- all_features_importances %>%
+  group_by(Feature) %>%
+  summarise(mean_healthy = mean(healthy, na.rm = TRUE),
+            mean_disease = mean(disease, na.rm = TRUE),
+            mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
+            mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
+  arrange(desc(mean_MeanDecreaseAccuracy))
+
+# group importance metrics by feature and sort by average selection per tree
+mean_importance <- left_join(mean_importance, feature_split_summary %>% 
+                               select(Feature, avg_per_tree), by = "Feature") %>%
+  arrange(desc(avg_per_tree))
+head(as.data.frame(mean_importance), 20)
+
+
+### plot features with highest MeanDecreaseAccuracy
+ggplot(metabo_df, aes(x = beta.alanine)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative features",
+       subtitle = "Beta alanine",
+       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggplot(metabo_df, aes(x = myristate..14.0.)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative features",
+       subtitle = "Myristate..14.0.",
+       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+ggplot(metabo_df, aes(x = X.24683)) +
+  geom_density(aes(fill = condition), alpha = 0.5) +
+  labs(title = "Abundance of discriminative features",
+       subtitle = "X.24683",
+       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+  theme_minimal()
+
+
+### calculate performance statistics
+# create vectors to store metrics
+balanced_accuracy <- numeric()
+f1_score <- numeric()
+sensitivity <- numeric()
+specificity <- numeric()
+auc_vals <- numeric()
+
+# extract metrics from the stored confusion matrices
+for (perf in performance_metrics) {
+  cm <- perf$cm
+  auc_val <- as.numeric(perf$auc[])
+  
+  # confusion matrix metrics
+  balanced_accuracy <- c(balanced_accuracy, cm$byClass["Balanced Accuracy"])
+  f1_score <- c(f1_score, cm$byClass["F1"])
+  sensitivity <- c(sensitivity, cm$byClass["Sensitivity"])
+  specificity <- c(specificity, cm$byClass["Specificity"])
+  auc_vals <- c(auc_vals, auc_val)
+}
+
+# combine metrics in a summary table
+metric_summary <- data.frame(mean_bal_acc = mean(balanced_accuracy, na.rm = TRUE),
+                             sd_bal_acc = sd(balanced_accuracy, na.rm = TRUE),
+                             mean_f1 = mean(f1_score, na.rm = TRUE),
+                             sd_f1 = sd(f1_score, na.rm = TRUE),
+                             mean_sens = mean(sensitivity, na.rm = TRUE),
+                             sd_sens = sd(sensitivity, na.rm = TRUE),
+                             mean_spec = mean(specificity, na.rm = TRUE),
+                             sd_spec = sd(specificity, na.rm = TRUE),
+                             mean_auc = mean(auc_vals, na.rm = TRUE),
+                             sd_auc = sd(auc_vals, na.rm = TRUE))
+metric_summary
+
+
+#####################################################################################
+########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  #######
+#####################################################################################
+
+# features to be used in the model
+final_boruta_feats <- boruta_selected_summary %>%
+  filter(overall_selection_rate >= 0.3)
+boruta_feats <- final_boruta_feats$Feature
 
 # train the model on the full dataset
-
 set.seed(1234)
-final_model_bal_acc <- randomForest(x = boruta_df[, subset_feat_cols], 
-                                    y = as.factor(boruta_df$condition), 
-                                    mtry = mtry_opt,
-                                    ntree = ntree_opt,
-                                    nodesize = nodesize_opt,
-                                    classwt = classwt_opt,
-                                    importance = TRUE)
+final_model <- randomForest(x = metabo_df[, boruta_feats], 
+                            y = as.factor(metabo_df$condition), 
+                            mtry = round(sqrt(length(boruta_feats))),
+                            ntree = 500,
+                            nodesize = 5,
+                            classwt = c(healthy = 2, disease = 1),
+                            importance = TRUE)
 
 # # save final model
-# saveRDS(final_model_bal_acc, file = "final_rf_model_metabo_bal_acc.rds")
+# saveRDS(final_model, file = "final_rf_model_metabo.rds")
+
+
+##############################################################################
+###   RANDOM FOREST - FAST SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
+##############################################################################
+
+# function to get predicted disease probability
+pred_fun <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "prob")[, "disease"]
+}
+
+# compute fast SHAP values
+set.seed(1234) # set seed
+
+shap_values <- fastshap::explain(object = final_model,
+                                 X = metabo_df[, boruta_feats],
+                                 pred_wrapper = pred_fun,
+                                 nsim = 100, # number of Monte Carlo permutations
+                                 adjust = TRUE) # centered SHAP values (baseline + sum of SHAPs = prediction)
+shap_values <- as.data.frame(shap_values)     
+
+
+### summarize SHAP values
+shap_long <- shap_values %>%
+  mutate(ID = row_number()) %>%
+  pivot_longer(-ID, names_to = "feature", values_to = "value")
+
+# add rfvalues (abundance) to shap_long
+rfvalue_long <- metabo_df[, boruta_feats] %>%
+  mutate(ID = row_number()) %>%
+  pivot_longer(cols = -ID, names_to = "feature", values_to = "rfvalue")
+shap_long <- shap_long %>%
+  left_join(rfvalue_long, by = c("ID", "feature"))
+
+# mean shap values
+mean_shap_df <- shap_long %>%
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_shap = mean(value, na.rm = TRUE)) 
+
+# join mean abs values and mean values
+shap_summary <- shap_long %>%
+  dplyr::group_by(feature) %>%
+  dplyr::summarise(mean_abs_shap = mean(abs(value), na.rm = TRUE)) %>%
+  dplyr::arrange(desc(mean_abs_shap)) %>%
+  dplyr::left_join(mean_shap_df, by = "feature")
+
+# plot mean absolute SHAP value per feature
+ggplot(shap_summary, aes(x = reorder(feature, mean_abs_shap), y = mean_abs_shap)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Mean absolute SHAP value", 
+       x = "Feature", y = "Mean absolute SHAP value")
+
+# plot mean SHAP value per feature
+ggplot(shap_summary, aes(x = reorder(feature, mean_shap), y = mean_shap)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+  labs(title = "Mean SHAP value", 
+       x = "Feature", y = "Mean SHAP value")
+
+# recreate shap.plot.summary from treeshap (beeswarm-style plot)
+shap_plot <- shap_long %>%
+  dplyr::group_by(feature) %>%
+  dplyr::mutate(scaled_rfvalue = scale(rfvalue)[,1]) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(feature = factor(feature, levels = rev(shap_summary$feature)))
+
+ggplot(shap_plot, aes(x = value, y = feature, color = scaled_rfvalue)) +
+  geom_jitter(height = 0.2, alpha = 0.7, size = 1.2) +
+  scale_color_viridis_c(option = "plasma", direction = -1) + theme_minimal() +
+  labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
+       color = "Feature value")
+
+
+### SHAP dependence plots (how SHAP values for a given feature vary as the input values for the feature vary)
+# wide table of log-transformed relative abundance
+rfvalue_wide <- metabo_df[, boruta_feats] %>%
+  mutate(ID = row_number())
+
+feature_name <- "beta.alanine"
+shap_dep <- shap_long %>% filter(feature == feature_name)
+plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
+interaction_feature <- "phosphate"
+
+ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
+  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
+  labs(title = paste("SHAP dependence plot for", feature_name),
+       x = paste(feature_name, "- log abun"), 
+       y = paste(feature_name, "- SHAP value"),
+       color = paste(interaction_feature, "- log abun"))
+
+
+feature_name <- "myristate..14.0."
+shap_dep <- shap_long %>% filter(feature == feature_name)
+plot_df <- shap_dep %>% left_join(rfvalue_wide, by = "ID")
+interaction_feature <- "X.24683"
+
+ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]])) + theme_minimal() +
+  geom_point(alpha = 0.8) + geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
+  labs(title = paste("SHAP dependence plot for", feature_name),
+       x = paste(feature_name, "- log abun"), 
+       y = paste(feature_name, "- SHAP value"),
+       color = paste(interaction_feature, "- log abun"))
+
+
+### mean absolute SHAP value per class per feature
+shap_values$condition <- metabo_df$condition
+abs_shap_by_class <- shap_values %>%
+  pivot_longer(cols = -condition) %>%
+  group_by(condition, name) %>%
+  summarise(mean_abs_shap = mean(abs(value)), .groups = "drop")
+
+# plot mean absolute SHAP value per class per feature
+ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
+  labs(title = "Class-specific mean absolute SHAP values",
+       x = "Feature", y = "Mean abs SHAP", fill = "Condition")
+
+
+### mean SHAP value per class per feature
+shap_values$condition <- metabo_df$condition
+abs_shap_by_class <- shap_values %>%
+  pivot_longer(cols = -condition) %>%
+  group_by(condition, name) %>%
+  summarise(mean_shap = mean(value), .groups = "drop")
+
+# plot mean SHAP value per class per feature
+ggplot(abs_shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
+  geom_col(position = "dodge") + coord_flip() + theme_minimal() +
+  labs(title = "Class-specific mean SHAP values",
+       x = "Feature", y = "Mean SHAP", fill = "Condition")
+
+
+### how the impact of a given feature on model prediction varies between healthy and disease samples
+# histogram of SHAP values
+ggplot(shap_values, aes(x = beta.alanine, fill = condition)) +
+  geom_density(alpha = 0.6) + theme_minimal() +
+  labs(title = "SHAP value distribution - beta.alanine",
+       x = "SHAP value", y = "Density", fill = "Condition")
+
+# boxplot of SHAP values
+ggplot(shap_values, aes(x = condition, y = beta.alanine, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "SHAP values for beta.alanine by condition",
+       y = "SHAP value", x = "Condition")
+
+# boxplot of log-abundance
+ggplot(metabo_df, aes(x = condition, y = beta.alanine, fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "Log abundance of beta.alanine by condition",
+       y = "Log Abundance", x = "Condition")
+
+
+# histogram of SHAP values
+ggplot(shap_values, aes(x = myristate..14.0., fill = condition)) +
+  geom_density(alpha = 0.6) + theme_minimal() +
+  labs(title = "SHAP value distribution - myristate..14.0.",
+       x = "SHAP value", y = "Density", fill = "Condition")
+
+# boxplot of SHAP values
+ggplot(shap_values, aes(x = condition, y = myristate..14.0., fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "SHAP values for myristate..14.0. by condition",
+       y = "SHAP value", x = "Condition")
+
+# boxplot of log-abundance
+ggplot(metabo_df, aes(x = condition, y = myristate..14.0., fill = condition)) +
+  geom_boxplot() + theme_minimal() +
+  labs(title = "Log abundance of myristate..14.0. by condition",
+       y = "Log abundance", x = "Condition")
+
+
+### SHAP values versus predicted probabilities
+shap_values$ID <- rownames(shap_values)
+prob <- as.data.frame(predict(final_model, newdata = metabo_df[, boruta_feats], type = "prob"))
+shap_values$pred_prob <- prob$disease
+
+# myristate..14.0.
+pred_plot <- shap_values %>%
+  select(ID, myristate..14.0., condition, pred_prob)
+ggplot(pred_plot, aes(x = myristate..14.0., y = pred_prob, color = condition)) +
+  geom_point(alpha = 0.6) + theme_minimal() +
+  labs(title = "myristate..14.0. SHAP value versus prediction probability",
+       x = "SHAP value for myristate..14.0.", y = "Predicted probability (disease)")
+
+# beta.alanine
+pred_plot <- shap_values %>%
+  select(ID, beta.alanine, condition, pred_prob)
+ggplot(pred_plot, aes(x = beta.alanine, y = pred_prob, color = condition)) +
+  geom_point(alpha = 0.6) + theme_minimal() +
+  labs(title = "beta.alanine SHAP value versus prediction probability",
+       x = "SHAP value for beta.alanine", y = "Predicted probability (disease)")
+
+
+### plot SHAP values versus importance 
+importance <- as.data.frame(importance(final_model))
+importance$feature <- rownames(importance)
+shap_import_df <- shap_summary %>%
+  left_join(importance, by = "feature")
+
+# plot SHAP values verus MeanDecreaseAccuracy
+ggplot(shap_import_df, aes(x = MeanDecreaseAccuracy, y = mean_abs_shap, label = feature)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.8) +
+  geom_text_repel(size = 3) + theme_minimal() +
+  labs(title = "Mean absolute SHAP versus mean decrease accuracy",
+       x = "Mean decrease accuracy",
+       y = "Mean absolute SHAP value")
+
+# plot SHAP values verus MeanDecreaseGini
+ggplot(shap_import_df, aes(x = MeanDecreaseGini, y = mean_abs_shap, label = feature)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.8) +
+  geom_text_repel(size = 3) + theme_minimal() +
+  labs(title = "Mean absolute SHAP versus mean decrease in Gini",
+       x = "Mean decrease in Gini",
+       y = "Mean absolute SHAP value")
+
+
+### fastshap does not calculate second-order SHAP effects
+# partial dependence (PDP) interaction plots (how much each feature interacts with others)
+library(iml)
+predictor <- Predictor$new(final_model, data = metabo_df[, boruta_feats], y = boruta_df$condition, type = "prob")
+interaction_strength <- Interaction$new(predictor)
+plot(interaction_strength)
 
 
 sessionInfo()
