@@ -2157,7 +2157,7 @@ for (r in 1:outer_repeats) {
                              mtry = round(sqrt(length(selected_features))),
                              ntree = 500,
                              nodesize = 5,
-                             classwt = c(healthy = 2, disease = 1),
+                             classwt = c(healthy = 1, disease = 1),
                              importance = TRUE) 
     
     # evaluate on test set
@@ -2318,7 +2318,8 @@ metric_summary
 
 # features to be used in the model
 final_boruta_feats <- boruta_selected_summary %>%
-  filter(overall_selection_rate >= 0.3)
+  arrange(desc(overall_selection_rate)) %>%
+  slice_head(n = 10)
 boruta_feats <- final_boruta_feats$Feature
 
 # train the model on the full dataset
@@ -2328,7 +2329,7 @@ final_model <- randomForest(x = metabo_df[, boruta_feats],
                             mtry = round(sqrt(length(boruta_feats))),
                             ntree = 500,
                             nodesize = 5,
-                            classwt = c(healthy = 2, disease = 1),
+                            classwt = c(healthy = 1, disease = 1),
                             importance = TRUE)
 
 # # save final model
@@ -2553,7 +2554,7 @@ ggplot(shap_import_df, aes(x = MeanDecreaseGini, y = mean_abs_shap, label = feat
 ### fastshap does not calculate second-order SHAP effects
 # partial dependence (PDP) interaction plots (how much each feature interacts with others)
 library(iml)
-predictor <- Predictor$new(final_model, data = metabo_df[, boruta_feats], y = boruta_df$condition, type = "prob")
+predictor <- Predictor$new(final_model, data = metabo_df[, boruta_feats], y = metabo_df$condition, type = "prob")
 interaction_strength <- Interaction$new(predictor)
 plot(interaction_strength)
 
