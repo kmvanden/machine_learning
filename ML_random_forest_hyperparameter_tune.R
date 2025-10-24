@@ -2099,14 +2099,14 @@ for (r in 1:outer_repeats) {
     # add proportion
     confirmed_boruta_df$proportion <- confirmed_boruta_df$count/boruta_repeats 
     
-    # keep only stable features 
-    stable_feats <- confirmed_boruta_df %>% 
-      filter(proportion >= 0.4) 
-    selected_features <- stable_feats$Feature 
-    
-    if (length(selected_features) < 2) { 
-      cat(sprintf("Too few stable features: skipping Repeat %d Fold %d.\n", r, f)) 
-      next 
+    # keep only stable features
+    stable_feats <- confirmed_boruta_df %>%
+      filter(proportion >= 0.4)
+    selected_features <- stable_feats$Feature
+
+    if (length(selected_features) < 2) {
+      cat(sprintf("Too few stable features: skipping Repeat %d Fold %d.\n", r, f))
+      next
     }
     
     # save stability info for features
