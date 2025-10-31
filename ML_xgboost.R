@@ -3579,9 +3579,9 @@ plot_feature_importance <- function(feat_imp,
     labs(title = y_label, x = "Feature", y = y_label, fill = "Feature selection frequency")
 }
 
-plot_feature_importance(feat_imp, importance = "gain", tot_num_folds = 50, importance_threshold = 0.0321)
-plot_feature_importance(feat_imp, importance = "cover", tot_num_folds = 50, importance_threshold = 0.01)
-plot_feature_importance(feat_imp, importance = "frequency", tot_num_folds = 50, importance_threshold = 0.01)
+plot_feature_importance(feat_imp, importance = "gain", tot_num_folds = 50, importance_threshold = 0.02, freq_selected_threshold = 0.8)
+plot_feature_importance(feat_imp, importance = "cover", tot_num_folds = 50, importance_threshold = 0.02, freq_selected_threshold = 0.8)
+plot_feature_importance(feat_imp, importance = "frequency", tot_num_folds = 50, importance_threshold = 0.017, freq_selected_threshold = 0.8)
 
 
 ### calculate and plot logloss (plots change of logloss over boosting rounds (type = "train", "test", or "both"))
@@ -3661,20 +3661,10 @@ plot_logloss <- function(results_obj, type = "test", show_mean = TRUE, max_round
   p + labs(title = "Logloss curves", x = "Boosting round", y = "Logloss") + theme_minimal()
 }
 
-plot_logloss(bayes_obj, type = "test", show_mean = TRUE,  max_rounds = 1500)
-plot_logloss(bayes_obj, type = "train", show_mean = FALSE, max_rounds = 1500)
-plot_logloss(bayes_obj, type = "both", show_mean = FALSE,  max_rounds = 1500)
-plot_logloss(bayes_obj, type = "gap",  max_rounds = 1500)
-
-
-
-
-
-
-
-
-
-
+plot_logloss(bayes_obj, type = "test", show_mean = TRUE,  max_rounds = 1000)
+plot_logloss(bayes_obj, type = "train", show_mean = FALSE, max_rounds = 1000)
+plot_logloss(bayes_obj, type = "both", show_mean = FALSE,  max_rounds = 1000)
+plot_logloss(bayes_obj, type = "gap",  max_rounds = 1000)
 
 
 ##############################################################################
@@ -3685,22 +3675,22 @@ plot_logloss(bayes_obj, type = "gap",  max_rounds = 1500)
 str(metagen)
 
 # optimum number of nrounds chosen during final evaluation
-best_nrounds <- round(mean(unlist(perf_opt_params$final_evaluation$best_nrounds)))
+best_nrounds <- bayes_obj$per_fold$nrounds_values[1]
 
 # best hyperparameter values determined by Bayesian optimization
 best_params <- list(objective = "binary:logistic",
                     eval_metric = "logloss",
-                    eta = best_param_values$eta,
-                    scale_pos_weight = best_param_values$scale_pos_weight,
-                    max_depth = best_param_values$max_depth,
-                    min_child_weight = best_param_values$min_child_weight,
-                    subsample = best_param_values$subsample,
-                    colsample_bytree = best_param_values$colsample_bytree,
-                    colsample_bynode = best_param_values$colsample_bynode,
-                    lambda = best_param_values$lambda,
-                    alpha = best_param_values$alpha,
-                    gamma = best_param_values$gamma,
-                    max_delta_step = best_param_values$max_delta_step)
+                    eta = bayes_obj$per_fold$eta[1],
+                    scale_pos_weight = bayes_obj$per_fold$scale_pos_weight[1],
+                    max_depth = bayes_obj$per_fold$max_depth[1],
+                    min_child_weight = bayes_obj$per_fold$min_child_weight[1],
+                    subsample = bayes_obj$per_fold$subsample[1],
+                    colsample_bytree = bayes_obj$per_fold$colsample_bytree[1],
+                    colsample_bynode = bayes_obj$per_fold$colsample_bynode[1],
+                    lambda = bayes_obj$per_fold$lambda[1],
+                    alpha = bayes_obj$per_fold$alpha[1],
+                    gamma = bayes_obj$per_fold$gamma[1],
+                    max_delta_step = bayes_obj$per_fold$max_delta_step[1])
 
 # train the model on the full dataset
 dtrain_full <- xgboost::xgb.DMatrix(data = as.matrix(metagen[, all_feat_cols]),
@@ -3711,45 +3701,6 @@ final_model <- xgboost::xgb.train(params = best_params,
                                   nrounds = best_nrounds,
                                   verbose = 1)
 
-
-###################################################################################################
-###   XGBOOST LOGLOSS MODEL - TRAIN FINAL MODEL WITH SHAP SUBSET DATA AND BEST HYPERPARAMETERS  ###
-###################################################################################################
-
-# data to be used in the model
-str(shap_metagen_df)
-
-# set predictor columns
-subset_feat_cols <- setdiff(colnames(shap_metagen_df), c("condition", "condition_numeric"))
-
-# optimum number of nrounds chosen during final evaluation
-best_nrounds <- round(mean(unlist(subset_params_performance$final_evaluation$best_nrounds)))
-
-# best hyperparameter values determined by Bayesian optimization
-best_params <- list(objective = "binary:logistic",
-                    eval_metric = "logloss",
-                    eta = best_param_shap_feat_values$eta,
-                    scale_pos_weight = best_param_shap_feat_values$scale_pos_weight,
-                    max_depth = best_param_shap_feat_values$max_depth,
-                    min_child_weight = best_param_shap_feat_values$min_child_weight,
-                    subsample = best_param_shap_feat_values$subsample,
-                    colsample_bytree = best_param_shap_feat_values$colsample_bytree,
-                    colsample_bynode = best_param_shap_feat_values$colsample_bynode,
-                    lambda = best_param_shap_feat_values$lambda,
-                    alpha = best_param_shap_feat_values$alpha,
-                    gamma = best_param_shap_feat_values$gamma,
-                    max_delta_step = best_param_shap_feat_values$max_delta_step)
-
-# train the model on the full dataset
-dtrain_full <- xgboost::xgb.DMatrix(data = as.matrix(shap_metagen_df[, subset_feat_cols]),
-                                    label = shap_metagen_df$condition_numeric)
-
-final_model <- xgboost::xgb.train(params = best_params,
-                                  data = dtrain_full,
-                                  nrounds = best_nrounds,
-                                  verbose = 1)
-
-
 #################################################################################
 ###   XGBOOST LOGLOSS MODEL - SHAP VALUES - DEPENDENCE AND INTERACTION PLOTS  ###
 #################################################################################
@@ -3759,23 +3710,29 @@ shap_values <- predict(final_model, newdata = dtrain_full, predcontrib = TRUE)
 shap_df <- as.data.frame(shap_values)
 shap_df$BIAS <- NULL  # remove bias term
 
+# prepare shap values into logn format for plotting
+shap_long <- shap.prep(xgb_model = final_model, X_train = as.matrix(metagen[, all_feat_cols]))
 
-### SHAP summary plot
-shap_long <- shap.prep(xgb_model = final_model, X_train = as.matrix(shap_metagen_df[, subset_feat_cols]))
-shap.plot.summary(shap_long)
-
-
-### mean absolute SHAP value per feature
+# calculate mean absolute SHAP value per feature
 shap_mean_abs <- sort(colMeans(abs(shap_df)), decreasing = TRUE)
 shap_mean_abs <- as.data.frame(shap_mean_abs) # covert to data.frame
 shap_mean_abs$feature <- rownames(shap_mean_abs)
 shap_mean_abs <- shap_mean_abs %>% 
   arrange(desc(shap_mean_abs))
 
+# subset shap_long to top 25 features by mean shap value
+top25_feat <- shap_mean_abs$feature[1:25]
+shap_long_top25 <- shap_long[variable %in% top25_feat]
+shap_long_top25[, variable := droplevels(variable)] # remove extra levels
 
-# recreate shap.plot.summary from treeshap (beeswarm-style plot) in ggpplot
+# plot summary of shap values 
+shap.plot.summary(shap_long) # full dataset
+shap.plot.summary(shap_long_top25) # reduced dataset
+
+
+# recreate shap.plot.summary from treeshap (beeswarm-style plot) in ggpplot using reduced dataset
 feature_order <- shap_mean_abs$feature
-shap_plot <- shap_long %>%
+shap_plot <- shap_long_top25 %>%
   mutate(variable = factor(variable, levels = rev(feature_order)))
 
 ggplot(shap_plot, aes(x = value, y = variable, color = rfvalue)) +
@@ -3784,8 +3741,10 @@ ggplot(shap_plot, aes(x = value, y = variable, color = rfvalue)) +
   labs(title = "SHAP summary plot", x = "SHAP value (impact on model output)", 
        color = "Feature value")
 
-# plot mean absolute SHAP value per feature
-ggplot(shap_mean_abs, aes(x = reorder(feature, shap_mean_abs), y = shap_mean_abs)) +
+
+### plot mean absolute SHAP value per feature for top 25 features
+shap_feat_plot_df <- head(shap_mean_abs, n = 25)
+ggplot(shap_feat_plot_df, aes(x = reorder(feature, shap_mean_abs), y = shap_mean_abs)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = "Mean absolute SHAP value", 
        x = "Feature", y = "Mean absolute SHAP value")
@@ -3797,11 +3756,11 @@ shap.plot.dependence(data_long = shap_long, x = "Lachnoclostridium_sp._YL32", y 
 shap.plot.dependence(data_long = shap_long, x = "Petrimonas_mucosa", y = NULL)
 
 
+### SHAP dependence plots plus interaction feature
 # wide table of CLR-transformed relative abundance
 rfvalue_wide <- shap_long %>%
   select(ID, variable, rfvalue) %>%
   pivot_wider(names_from = variable, values_from = rfvalue)
-
 
 feature_name <- "Lachnoclostridium_sp._YL32"
 shap_dep <- shap_long %>% filter(variable == feature_name)
@@ -3815,7 +3774,6 @@ ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]]
        x = paste(feature_name, "- CLR abun"), 
        y = paste(feature_name, "- SHAP value"),
        color = paste(interaction_feature, "- CLR abun"))
-
 
 feature_name <- "Petrimonas_mucosa"
 shap_dep <- shap_long %>% filter(variable == feature_name)
@@ -3833,71 +3791,101 @@ ggplot(plot_df, aes(x = rfvalue, y = value, color = .data[[interaction_feature]]
 
 ### SHAP interaction values (how pairs of features interact in affecting the prediction)
 interaction_values <- predict(final_model,
-                              newdata = as.matrix(shap_metagen_df[, subset_feat_cols]),
+                              newdata = as.matrix(metagen[, all_feat_cols]),
                               predinteraction = TRUE)
+
 interaction_values <- interaction_values[, -ncol(interaction_values), -ncol(interaction_values)] # remove BIAS term
 mean_interactions <- apply(abs(interaction_values), c(2, 3), mean) # average absolute interaction strengths
 
 # set row and column names
-feature_names <- colnames(shap_metagen_df[, subset_feat_cols])
+feature_names <- colnames(metagen[, all_feat_cols])
 rownames(mean_interactions) <- feature_names
 colnames(mean_interactions) <- feature_names
 
 # convert to long format for plotting
 interaction_long <- as.data.frame(mean_interactions) %>%
   rownames_to_column("Feature1") %>%
-  pivot_longer(cols = -Feature1, names_to = "Feature2", values_to = "InteractionStrength")
+  pivot_longer(cols = -Feature1, names_to = "Feature2", values_to = "InteractionStrength") 
 
 # remove self-interactions (diagonal) - to see other interactions more clearly
 interaction_long <- interaction_long %>%
   filter(Feature1 != Feature2)
 
+# identify top 25 strongest interaction pairs
+top25_pairs <- interaction_long %>%
+  dplyr::arrange(dplyr::desc(InteractionStrength)) %>%
+  head(n = 25)
+
+# get all unique features involved in those pairs
+top_feats_from_pairs <- unique(c(top25_pairs$Feature1, top25_pairs$Feature2))
+
+# subset the original full interaction matrix to those features
+mean_interactions_sub <- mean_interactions[top_feats_from_pairs, top_feats_from_pairs]
+
+# zero out self-interactions for clearer color scale
+diag(mean_interactions_sub) <- NA 
+
+# convert subset mean_interactions to long format for plotting
+interaction_sub_long <- as.data.frame(mean_interactions_sub) %>%
+  tibble::rownames_to_column("Feature1") %>%
+  tidyr::pivot_longer(cols = -Feature1, names_to = "Feature2", values_to = "InteractionStrength")
+
 # plot interaction heatmap
-ggplot(interaction_long, aes(x = Feature1, y = Feature2, fill = InteractionStrength)) +
+ggplot(interaction_sub_long, aes(x = Feature1, y = Feature2, fill = InteractionStrength)) +
   geom_tile() + scale_fill_viridis_c() + theme_minimal() + coord_fixed() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
   labs(title = "SHAP feature interactions", fill = "Mean absolute interaction")
 
 
 ### feature-specific interactions
 target_feat <- "Lachnoclostridium_sp._YL32" # feature of interest
-target_feat <- "Petrimonas_mucosa" # feature of interest
+# target_feat <- "Petrimonas_mucosa" # feature of interest
 
-# data.frame with average feature specific interaction for target_feat 
+# data.frame with average feature specific interaction for target_feat
 target_interact <- data.frame(feature = feature_names,
                               interaction = mean_interactions[which(feature_names == target_feat), ])
 target_interact <- target_interact[target_interact$feature != target_feat, ] # remove self-interaction
 
+# remove zero interactions
+target_interaction_sub <- target_interact %>% 
+  filter(interaction > 0)
+
 # plot feature-specific interactions
-ggplot(target_interact, aes(x = reorder(feature, interaction), y = interaction)) +
+ggplot(target_interaction_sub, aes(x = reorder(feature, interaction), y = interaction)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = paste("SHAP interactions with", target_feat),
        x = "Interacting feature", y = "Mean absolute interaction")
 
 
 ### mean absolute SHAP value per class per feature
-shap_df$condition <- shap_metagen_df$condition
+shap_df$condition <- metagen$condition
 abs_shap_by_class <- shap_df %>%
   pivot_longer(cols = -condition) %>%
   group_by(condition, name) %>%
   summarise(mean_abs_shap = mean(abs(value)), .groups = "drop")
 
 # plot mean absolute SHAP value per class per feature
-ggplot(abs_shap_by_class, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
+abs_shap_by_class_top25 <- abs_shap_by_class %>%
+  filter(name %in% top25_feat) # filter features with top 25 abs shap values
+
+ggplot(abs_shap_by_class_top25, aes(x = reorder(name, mean_abs_shap), y = mean_abs_shap, fill = condition)) +
   geom_col(position = "dodge") + coord_flip() + theme_minimal() +
   labs(title = "Class-specific mean absolute SHAP values",
        x = "Feature", y = "Mean abs SHAP", fill = "Condition")
 
 
 ### mean SHAP value per class per feature
-shap_df$condition <- shap_metagen_df$condition
+shap_df$condition <- metagen$condition
 shap_by_class <- shap_df %>%
   pivot_longer(cols = -condition) %>%
   group_by(condition, name) %>%
   summarise(mean_shap = mean(value), .groups = "drop")
 
 # plot mean SHAP value per class per feature
-ggplot(shap_by_class, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
+shap_by_class_top25 <- shap_by_class %>%
+  filter(name %in% top25_feat) # filter features with top 25 abs shap values
+
+ggplot(shap_by_class_top25, aes(x = reorder(name, mean_shap), y = mean_shap, fill = condition)) +
   geom_col(position = "dodge") + coord_flip() + theme_minimal() +
   labs(title = "Class-specific mean SHAP values",
        x = "Feature", y = "Mean SHAP", fill = "Condition")
@@ -3917,7 +3905,7 @@ ggplot(shap_df, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condit
        y = "SHAP value", x = "Condition")
 
 # box plot of CLR-abundance
-ggplot(shap_metagen_df, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condition)) +
+ggplot(metagen, aes(x = condition, y = Lachnoclostridium_sp._YL32, fill = condition)) +
   geom_boxplot() + theme_minimal() +
   labs(title = "CLR abundance of Lachnoclostridium_sp._YL32 by condition",
        y = "CLR Abundance", x = "Condition")
@@ -3936,7 +3924,7 @@ ggplot(shap_df, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
        y = "SHAP value", x = "Condition")
 
 # box plot of CLR-abundance
-ggplot(shap_metagen_df, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
+ggplot(metagen, aes(x = condition, y = Petrimonas_mucosa, fill = condition)) +
   geom_boxplot() + theme_minimal() +
   labs(title = "CLR abundance of Petrimonas_mucosa by condition",
        y = "CLR abundance", x = "Condition")
