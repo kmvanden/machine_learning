@@ -179,8 +179,8 @@ ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y =
 # average number of times feature was used in a split per tree (across all models) 
 ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "TTop 30 most frequently selected features - splits",
-       x = "Feature", y = "Number of models")
+  labs(title = "Top 30 most frequently selected features - splits",
+       x = "Feature", y = "Average splits per tree")
 
 
 ### calculate feature importances
@@ -663,7 +663,7 @@ for (i in names(weight_grid)) {
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
       # store with repeat (r) and fold (f) index
-      key <- paste0(i, "_Repeat_", r, "_Fold_", f)
+      key <- paste0("classwt", i, "_Repeat_", r, "_Fold_", f)
       performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
@@ -672,6 +672,7 @@ for (i in names(weight_grid)) {
     }
   }
 }
+
 
 ### calculate performance statistics
 grid_perf_stats <- function(performance_metrics, type = c("test", "train", "gap")) {
@@ -915,7 +916,7 @@ for (i in ntree_values) {
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
       # store with repeat (r) and fold (f) index
-      key <- paste0(i, "_Repeat_", r, "_Fold_", f)
+      key <- paste0("ntree_", i, "_Repeat_", r, "_Fold_", f)
       performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
@@ -1013,7 +1014,7 @@ for (i in mtry_values) {
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
       # store with repeat (r) and fold (f) index
-      key <- paste0(i, "_Repeat_", r, "_Fold_", f)
+      key <- paste0("mtry_", i, "_Repeat_", r, "_Fold_", f)
       performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
@@ -1110,7 +1111,7 @@ for (i in nodesize_values) {
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
       # store with repeat (r) and fold (f) index
-      key <- paste0(i, "_Repeat_", r, "_Fold_", f)
+      key <- paste0("nodesize_", i, "_Repeat_", r, "_Fold_", f)
       performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
@@ -1234,10 +1235,10 @@ optObj <- bayesOpt(FUN = scoring_function,
 registerDoSEQ()
 
 # view results
-stopstatus_auc = optObj$stopStatus
-scoresum_auc = optObj$scoreSummary[order(-Score), ]
+optObj$stopStatus
+score_summary = optObj$scoreSummary[order(-Score), ]
 head(optObj$scoreSummary[order(-Score), ])
-bestparams_auc = getBestPars(optObj)
+bestparams = getBestPars(optObj)
 
 
 ############################################################################################################
@@ -1256,10 +1257,10 @@ performance_metrics <- list() # list to store performance metrics
 feature_frequencies <- list() # list to store feature selection frequencies
 
 # optimal hyperparameter values
-mtry_opt <- bestparams_auc$mtry
-ntree_opt <- bestparams_auc$ntree
-nodesize_opt <- bestparams_auc$nodesize
-classwt_opt <- weight_grid[[label_keys[bestparams_auc$classwt_label]]]
+mtry_opt <- bestparams$mtry
+ntree_opt <- bestparams$ntree
+nodesize_opt <- bestparams$nodesize
+classwt_opt <- weight_grid[[label_keys[bestparams$classwt_label]]]
 
 # repeat cross-validation 50 times
 for (r in 1:50) {
@@ -1363,7 +1364,7 @@ feature_split_summary <- feature_split_summary %>%
 # total number of models where feature was used at least once
 ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = n_models)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "Top 30 most frequently selected features - model",
+  labs(title = "Top 30 most frequently selected features - models",
        x = "Feature", y = "Number of models")
 
 # average number of times feature was used in a split per tree (across all models) 
@@ -1399,14 +1400,14 @@ ggplot(boruta_df, aes(x = Lachnoclostridium_sp._YL32)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Lachnoclostridium sp. YL32",
-       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+       x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
 ggplot(boruta_df, aes(x = Anaerobutyricum_hallii)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Anaerobutyricum hallii",
-       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+       x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
 
@@ -1638,14 +1639,14 @@ ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Lachnoclostridium sp. YL32",
-       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+       x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
 ggplot(metagen, aes(x = Anaerobutyricum_hallii)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Anaerobutyricum hallii",
-       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
+       x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
 
@@ -1666,7 +1667,7 @@ plot_roc(performance_metrics)
 # features to be used in the model
 final_boruta_feats <- boruta_selected_summary %>%
   arrange(desc(overall_selection_rate)) %>%
-  slice_head(n = 20)
+  slice_head(n = 10)
 boruta_feats <- final_boruta_feats$Feature
 
 
@@ -1674,7 +1675,7 @@ boruta_feats <- final_boruta_feats$Feature
 set.seed(1234)
 final_model <- randomForest(x = metagen[, boruta_feats], 
                             y = as.factor(metagen$condition), 
-                            mtry = round(sqrt(length(boruta_feats))),
+                            mtry = round(sqrt(length(selected_features))),
                             ntree = 500,
                             nodesize = 5,
                             classwt = c(healthy = 2, disease = 1),
