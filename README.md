@@ -1,5 +1,5 @@
 # Machine Learning
-## :cowboy_hat_face::mountain::spider_web: Logistic Regression
+## Logistic Regression
 Logistic regression is a statistical classification algorithm that models the relationship between predictor variables and outcome labels.
 
 ### Overview of Logistic Regression Model Construction
@@ -66,7 +66,7 @@ In logistic regression, key hyperparameters relate to regularization (addition o
 
 **Class weights**: when classes are imbalanced, logistic regression models tend to minimize loss by favoring the majority class, often at the expense of the minority class. Class weights correct for this by assigning higher weights to samples from the minority class in the loss function, thus the penalty for misclassifying minority samples is amplified.
 
-## :evergreen_tree::deciduous_tree::evergreen_tree: Random Forest
+## Random Forest
 Random forests are an ensemble learning method that aggregates the predictions of multiple decision trees built using bootstrap sampling and random feature selection in order to improve classification (categorical outcomes) or regression (continuous outcomes) performance.
 
 ### Overview of Random Forest Model Construction
@@ -135,7 +135,7 @@ The decision tree-building process is then repeated ```ntree``` times to create 
   - **Number of trees** (```ntree```): determines how many decision trees are in the forest. 
 More trees = more stable and consistent predictions, improvement of generalization and accuracy (up to a point), but requires longer computation time
 
-## :evergreen_tree::deciduous_tree::rocket: XGBoost
+## XGBoost
 XGBoost (extreme gradient boosting) is an ensemble learning method that uses a second-order Taylor expansion of the loss function to sequentially optimize shallow decision trees. 
 
 ### Overview of XGBoost Model Construction
@@ -228,7 +228,7 @@ In XGBoost, important hyperparameters relate to weight regularization (L1 and L2
 
 **Class imbalance** (```scale_pos_weight```): scales the gradients and the Hessians for the positive class (label = 1) during training. An imbalanced dataset can be biased toward the majority class and underperform on the minority class. To counter this, ```scale_pos_weight``` is commonly set to the ratio of the number of negative samples divided by the number of positive samples. This number is used to scale the gradients and the Hessians of the positive class. Larger gradients and Hessians contribute more to the gain function, resulting in increased gain from splits that separate the minority class from the majority class, and thus encouraging the model to put more importance on the minority class samples. Class balance in the number of samples does not always mean signal balance. Some classes may be harder to predict, due to weaker features and/or more variability within the class, which can be determined by examining class-level performance.
 
-## :bar_chart::medal_sports: Classification Performance Metrics
+## Classification Performance Metrics
 Performance metrics are used to evaluate how well the model performs on the test data set (the prediction quality of the model).
 
 **Confusion matrix**: compares predicted labels versus actual labels of the data.
@@ -264,7 +264,7 @@ Performance metrics are used to evaluate how well the model performs on the test
 **ROC (receiver operating characteristic) curve**: plots the true positive rate (sensitivity) vs the false positive rate (1-specificity) at all possible classification thresholds. 
   - The area under the curve (AUC) is a measure of the overall ability of the model to discriminate positives versus negatives across all thresholds, and ranges from 0.5 (random guessing) to 1.0 (perfect classification).
 
-## :compass::wrench: Bayesian Optimization of Hyperparameters
+## Bayesian Optimization of Hyperparameters
 **Initial scoring function**: ```initPoints``` points are chosen uniformly at random from the predefined hyperparameter bounds (i.e., each hyperparameter is independently sampled from a uniform distribution over its respective range). Because of this independent random sampling, especially in high-dimensional spaces, the initial points may exhibit clustering or sparse coverage (gaps), particularly when initPoints is small relative to the number of dimensions. 
 
 Each of the sampled hyperparameter combinations (input) are then evaluated with the scoring function to get their respective scores (output). These input-output pairs form the training data for a Gaussian Process (GP), a probabilistic model used to approximate the unknown objective function. The GP assumes that the function values (scores) at all input locations are jointly Gaussian distributed (i.e., they follow a multivariate normal distribution). 
@@ -279,7 +279,7 @@ The optimizer searches the local hyperparameter space via multiple starting poin
 
 **Scoring function**: The top ```iters.k``` number of points (those with the highest acquisition values) are selected from the local optimum search and evaluated using the scoring function. The results of the scoring function are then used to update the GP for the next epoch (for a total of ```iters.n``` / ```iters.k``` epochs).
 
-## :thinking::memo: Key Issues with Microbiome Data When Using Machine Learning Models
+## Key Issues with Microbiome Data When Using Machine Learning Models
 ### Compositional data
 Microbiome data consists of relative abundances, which introduces spurious correlations between the features due to the constant-sum constraint. 
 
