@@ -1,4 +1,4 @@
-# Random Forest Workflow for Metabolomics Data - Hyperparameter Tuning
+# Random Forest Workflow for Metabolomics Data
 
 # load libraries
 library(ggplot2)
@@ -41,54 +41,55 @@ table(meta$condition)
 
 
 ### feature table
-metabo <- read_excel("metabo_batch.xlsx", sheet = "Batch-normalized Data") # batch-normalized feature table
-all(metabo$PARENT_SAMPLE_NAME %in% meta$PARENT_SAMPLE_NAME)
+feat <- read_excel("metabo_batch.xlsx", sheet = "Batch-normalized Data") # batch-normalized feature table
+all(feat$PARENT_SAMPLE_NAME %in% meta$PARENT_SAMPLE_NAME)
 
-# replace names in PARENT_SAMPLE_NAME column in metabo with names from sample_name (from meta)
-metabo <- metabo %>%
+# replace names in PARENT_SAMPLE_NAME column in feat with names from sample_name (from meta)
+feat <- feat %>%
   left_join(meta %>% dplyr::select(PARENT_SAMPLE_NAME, sample_name), by = "PARENT_SAMPLE_NAME") %>%
   mutate(PARENT_SAMPLE_NAME = sample_name) %>%
   dplyr::select(-sample_name) %>%
   slice(match(meta$sample_name, PARENT_SAMPLE_NAME)) %>% # match order of samples in meta
   column_to_rownames(var = "PARENT_SAMPLE_NAME") # move sample id column to rownames
-all(rownames(metabo) == rownames(meta))
+all(rownames(feat) == rownames(meta))
 
-# replace CHEM_ID (colnames of metabo) with names from CHEMICAL_NAME (from metabo_key)
-metabo_key <- read_excel("metabo_batch.xlsx", sheet = "Chemical Annotation")
-all(colnames(metabo) == metabo_key$CHEM_ID)
-name_map <- metabo_key %>% dplyr::select(CHEM_ID, CHEMICAL_NAME) %>% deframe() 
-colnames(metabo) <- name_map[colnames(metabo)] %>% ifelse(is.na(.), colnames(metabo), .)
-all(colnames(metabo) == metabo_key$CHEMICAL_NAME)
-colnames(metabo) <- make.names(colnames(metabo)) # make sure names are syntactically valid 
+# replace CHEM_ID (colnames of feat) with names from CHEMICAL_NAME (from feat_key)
+feat_key <- read_excel("metabo_batch.xlsx", sheet = "Chemical Annotation")
+all(colnames(feat) == feat_key$CHEM_ID)
+name_map <- feat_key %>% dplyr::select(CHEM_ID, CHEMICAL_NAME) %>% deframe() 
+colnames(feat) <- name_map[colnames(feat)] %>% ifelse(is.na(.), colnames(feat), .)
+all(colnames(feat) == feat_key$CHEMICAL_NAME)
+colnames(feat) <- make.names(colnames(feat)) # make sure names are syntactically valid 
+
 
 ### feature filtering, zero imputation and log transformation 
 # assess missingness (zeros listed as NAs in data.frame)
-total_missing <- sum(is.na(metabo)) / prod(dim(metabo)) * 100 # overall missingness
-missing_per_feature <- colMeans(is.na(metabo)) * 100 # missingness per feature
+total_missing <- sum(is.na(feat)) / prod(dim(feat)) * 100 # overall missingness
+missing_per_feature <- colMeans(is.na(feat)) * 100 # missingness per feature
 summary(missing_per_feature)
-missing_per_sample <- rowMeans(is.na(metabo)) * 100 # missingness per sample
+missing_per_sample <- rowMeans(is.na(feat)) * 100 # missingness per sample
 hist(missing_per_feature, breaks = 50, main = "Percent missing per metabolite", xlab = "Percent missing")
 
 # remove features with greater than 30% missing values
-metabo_filtered <- metabo[, missing_per_feature <= 30]
+feat_filtered <- feat[, missing_per_feature <= 30]
 
 # impute remaining zeros with kNN
-metabo_imputed <- impute.knn(as.matrix(t(metabo_filtered)))$data # impute.knn expects features as rows
-metabo_imputed <- t(metabo_imputed)
+feat_imputed <- impute.knn(as.matrix(t(feat_filtered)))$data # impute.knn expects features as rows
+feat_imputed <- t(feat_imputed)
 
 # log2 transformation (with pseudocount)
-metabo <- log2(metabo_imputed + 1e-6)
-
+feat_log <- log2(feat_imputed + 1e-6)
+feat_log <- as.data.frame(feat_log)
 
 # rownames of metadata need to match the rownames of the feature table
-metabo <- as.data.frame(metabo)
-all(rownames(meta) == rownames(metabo))
-metabo$sample_name <- rownames(metabo) # add column sample_name
+all(rownames(meta) == rownames(feat_log))
+feat_log$sample_name <- rownames(feat_log) # add column sample_name
 meta <- meta[, -c(3,4)] # remove meta columns that were used to format data.frames
 
-# merge metadata and feature table
-metabo_df <- merge(meta, metabo, by = "sample_name", all.x = TRUE)
-metabo_df <- metabo_df[,-1] # remove sample_name
+
+### merge metadata and feature table
+metabo <- merge(meta, feat_log, by = "sample_name", all.x = TRUE)
+metabo <- metabo[,-1] # remove sample_name
 
 
 ###############################################################################
@@ -96,10 +97,10 @@ metabo_df <- metabo_df[,-1] # remove sample_name
 ###############################################################################
 
 # data to be used in the model
-str(metabo_df)
+str(metabo)
 
 # column names for features to be included in model (full predictor set)
-all_feat_cols <- setdiff(colnames(metabo_df), "condition")
+all_feat_cols <- setdiff(colnames(metabo), "condition")
 
 # create lists to store metrics
 feature_importances <- list() # list to store feature importances
@@ -112,20 +113,21 @@ for (r in 1:50) {
   
   # create 5-folds for cross-validation (stratified on condition)
   set.seed(1234 + r*100)
-  folds <- createFolds(metabo_df$condition, k = 5, list = TRUE)
+  folds <- createFolds(metabo$condition, k = 5, list = TRUE)
   
   # loop through the folds
   for (f in 1:5) {
     
     # splits the dataset into training and testing sets for the current fold
     test_idx <- folds[[f]] # test indices for the f-th fold
-    train_data <- metabo_df[-test_idx, ] # training data (all rows not in fold f)
-    test_data  <- metabo_df[test_idx, ] # testing data (fold f)
+    train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+    test_data <- metabo[test_idx, ] # testing data (fold f)
     
     # train random forest model
     rf_model <- randomForest(x = train_data[, all_feat_cols], 
                              y = as.factor(train_data$condition), 
-                             ntree = 500, importance = TRUE) 
+                             ntree = 500, 
+                             importance = TRUE) 
     
     # evaluate on test set
     test_predictions <- predict(rf_model, newdata = test_data[, all_feat_cols], type = "response") # predicted class labels for cm
@@ -140,7 +142,7 @@ for (r in 1:50) {
                         predictor = test_probabilities[, "disease"],
                         levels = c("healthy", "disease"),
                         direction = "<")
-    test_auc_value <- auc(test_roc_obj)
+    test_auc <- auc(test_roc_obj)
     
     # store test ROC coordinates
     test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -171,10 +173,11 @@ for (r in 1:50) {
     test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
     train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
     
-    # store with repeat (r) and fold (f) index
+    
+    ### store with repeat (r) and fold (f) index
     key <- paste0("Repeat_", r, "_Fold_", f)
     feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
-    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                        train_cm = train_cm, train_auc = train_auc,
                                        test_roc_df = test_roc_df, train_roc_df = train_roc_df) # store performance metrics (test and train)
     feature_importances[[key]] <- importance(rf_model)  # store feature importances
@@ -182,31 +185,25 @@ for (r in 1:50) {
 }
 
 
-### calculate feature frequencies
-all_splits <- bind_rows(feature_frequencies, .id = "Repeat_Fold") # combine frequencies into a single data.frame
-colnames(all_splits) <- c("Repeat_Fold", "Feature", "Count") # rename columns
-
-# summarize total and average counts
-feature_split_summary <- all_splits %>%
-  group_by(Feature) %>%
-  summarise(total_count = sum(Count, na.rm = TRUE),
-            mean_count = mean(Count, na.rm = TRUE),
+### calculate feature frequencies and relative frequency of feature selection
+feature_split_summary <- bind_rows(feature_frequencies, .id = "Repeat_Fold") %>%
+  rename(Feature = tree_split_vars) %>%
+  group_by(Feature) %>% # group stability metrics by feature
+  summarise(total_count = sum(Freq, na.rm = TRUE),
+            mean_count = mean(Freq, na.rm = TRUE),
             n_models = n()) %>%
-  arrange(desc(total_count))
-head(feature_split_summary, 20)
-
-# calculate relative frequency of feature selection
-feature_split_summary <- feature_split_summary %>%
   mutate(prop_models = n_models / length(feature_frequencies),
-         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree)) %>%
+  arrange(desc(total_count))
+head(as.data.frame(feature_split_summary), 20)
 
-# total number of models where feature was used at least once
+# plot total number of models where feature was used at least once
 ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = n_models)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = "Top 30 most frequently selected features - models",
        x = "Feature", y = "Number of models")
 
-# average number of times feature was used in a split per tree (across all models) 
+# plot average number of times feature was used in a split per tree (across all models) 
 ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = "Top 30 most frequently selected features - splits",
@@ -233,20 +230,47 @@ mean_importance <- all_features_importances %>%
 head(mean_importance, 20)
 
 
-### plot features with highest MeanDecreaseAccuracy
-ggplot(metabo_df, aes(x = beta.alanine)) +
+### plot metabolite with highest MeanDecreaseAccuracy
+ggplot(metabo, aes(x = beta.alanine)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
-  labs(title = "Abundance of discriminative features",
+  labs(title = "Abundance of discriminative metabolite",
        subtitle = "Beta alanine",
        x = "Abundance", y = "Density of Samples", fill = "Condition") +
   theme_minimal()
 
-ggplot(metabo_df, aes(x = myristate..14.0.)) +
-  geom_density(aes(fill = condition), alpha = 0.5) +
-  labs(title = "Abundance of discriminative features",
-       subtitle = "Myristate..14.0.",
-       x = "Abundance", y = "Density of Samples", fill = "Condition") +
-  theme_minimal()
+
+### plot split frequency versus feature importance
+# top 20 features by split frequency
+top_features <- feature_split_summary %>% 
+  arrange(desc(avg_per_tree)) %>% 
+  slice(1:20) # top 20 features by split frequency
+
+# merge with mean_importance data.frame
+top_features_importance <- top_features %>%
+  left_join(mean_importance, by = c("Feature"))
+
+# plot meanMDA versus split frequency
+ggplot(top_features_importance, aes(x = avg_per_tree, y = mean_MeanDecreaseAccuracy, label = Feature)) +
+  geom_point(color = "steelblue", size = 3) + geom_text_repel(size = 3, max.overlaps = 8) + theme_minimal() +
+  labs(x = "Split frequency", y = "Mean MDA",
+       title = "Split frequency versus permutation importance")
+
+# long data.frame for plotting importance by condition
+top_features_long <- top_features_importance %>%
+  select(Feature, avg_per_tree, mean_healthy, mean_disease) %>%
+  pivot_longer(cols = c(mean_healthy, mean_disease),
+               names_to = "Condition",
+               values_to = "Importance") %>%
+  mutate(Condition = recode(Condition,
+                            mean_healthy = "Healthy",
+                            mean_disease = "Disease"))
+
+# plot meanMDA by condition versus split frequency
+ggplot(top_features_long, aes(x = avg_per_tree, y = Importance, color = Condition)) +
+  geom_point(size = 3, alpha = 0.7) + theme_minimal() +
+  labs(x = "Split frequency", y = "Mean MDA by condition",
+       title = "Split frequency versus permutation importance by condition", color = "Condition") +
+  scale_color_manual(values = c("Healthy" = "steelblue", "Disease" = "indianred3"))
 
 
 ### calculate performance statistics
@@ -291,6 +315,7 @@ perf_stats <- function(performance_metrics, type = c("test", "train", "gap")) {
     train_specificity <- c(train_specificity, train_cm$byClass["Specificity"])
     train_auc_vals <- c(train_auc_vals, train_auc_val)
   }
+  
   # test metric summary
   test_metric_summary <- data.frame(mean_bal_acc = mean(test_balanced_accuracy, na.rm = TRUE),
                                     sd_bal_acc = sd(test_balanced_accuracy, na.rm = TRUE),
@@ -362,14 +387,14 @@ plot_roc <- function(performance_metrics) {
               upper_tpr = quantile(tpr_interp, 0.975, na.rm = TRUE),
               .groups = "drop")
   
-  # plot train ans test ROC curves
+  # plot train and test ROC curves
   p <- ggplot(mean_roc, aes(x = fpr, y = mean_tpr, color = Set, fill = Set)) +
     geom_line(linewidth = 1.2) + coord_equal() + theme_minimal() +
     geom_ribbon(aes(ymin = lower_tpr, ymax = upper_tpr), alpha = 0.2, color = NA) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
     scale_color_manual(values = c("Train" = "indianred3", "Test" = "steelblue")) +
     scale_fill_manual(values = c("Train" = "indianred3", "Test" = "steelblue")) +
-    labs(title = "Average ROC curves across nested CV folds",
+    labs(title = "Average ROC curves across CV folds",
          x = "False positive rate (1 - specificity)", y = "True positive rate (sensitivity)", 
          color = "Dataset", fill = "Dataset")
   
@@ -379,249 +404,15 @@ plot_roc <- function(performance_metrics) {
 plot_roc(performance_metrics)
 
 
-#################################################################################################
-###   BORUTA FEATURE SELECTION + RANDOM FOREST MODEL - 5-FOLD CROSS-VALIDATION + 50 REPEATS   ###
-#################################################################################################
-
-# data to be used in the model
-str(metabo_df)
-
-n_repeats <- 50
-boruta_metrics_list <- list() # list to store Boruta metrics
-
-for (i in 1:n_repeats) {
-  cat("Running Boruta:", i, "\n")
-  
-  set.seed(1234 + i*100)
-  bor <- Boruta(condition ~ ., data = metabo_df, maxRuns = 250, ntree = 500, pValue = 0.01, doTrace = 0)
-  bor <- TentativeRoughFix(bor)
-  
-  # boruta metrics
-  imp_stats <- attStats(bor)
-  imp_stats$Feature <- rownames(imp_stats)
-  boruta_metrics_list[[i]] <- imp_stats
-}
-
-
-# aggregate median importance
-boruta_metrics <- do.call(rbind, boruta_metrics_list)
-
-# keep only confirmed features
-confirmed_boruta_df <- boruta_metrics %>%
-  filter(decision == "Confirmed") %>%
-  group_by(Feature) %>%
-  summarise(mean_medianImp = mean(medianImp, na.rm = TRUE),
-            sd_medianImp = sd(medianImp, na.rm = TRUE),
-            count = n()) %>%
-  arrange(desc(count))
-
-# plot stable features ranked by average median importance
-ggplot(confirmed_boruta_df, aes(x = reorder(Feature, mean_medianImp), y = mean_medianImp)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
-  labs(title = "Average median importance of confirmed features",
-       x = "Feature", y = "Mean median importance")
-  
-# add proportion and sort by count
-confirmed_boruta_df$proportion <- confirmed_boruta_df$count/n_repeats
-  
-# plot features selection frequency
-ggplot(confirmed_boruta_df, aes(x = reorder(Feature, count), y = count)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
-  labs(title = "Feature selection frequency across Boruta repeats",
-       x = "Feature", y = paste("Number of runs selected (out of", n_repeats, ")"))  
-
-# plot by proportion
-ggplot(confirmed_boruta_df, aes(x = reorder(Feature, proportion), y = proportion)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
-  labs(title = "Proportion of Boruta repeats selecting each feature",
-       x = "Feature", y = "Proportion of Runs")  
-
-
-# keep only stable features
-stable_feats <- confirmed_boruta_df %>% 
-  filter(proportion >= 0.4)
-selected_features <- stable_feats$Feature
-length_feat <- length(selected_features)
-
-# subset metabo_df to just confirmed features
-boruta_df <- metabo_df[, c("condition", selected_features)]
-
-
-# data to be used in the model
-str(boruta_df)
-
-# column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
-
-# create lists to store metrics
-feature_importances <- list() # list to store feature importances
-performance_metrics <- list() # list to store performance metrics
-feature_frequencies <- list() # list to store feature selection frequencies
-
-# repeat cross-validation 50 times
-for (r in 1:50) {
-  cat("Repeat:", r, "\n")
-  
-  set.seed(1234 + r*100)
-  # create 5-folds for cross-validation (stratified on condition)
-  folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
-  
-  # loop through the folds
-  for (f in 1:5) {
-    
-    # splits the dataset into training and testing sets for the current fold
-    test_idx <- folds[[f]] # test indices for the f-th fold
-    train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-    test_data  <- boruta_df[test_idx, ] # testing data (fold f)
-    
-    # train random forest model
-    # x = all data in data.frame subset by subset_feat_cols (predictor values)
-    # y = target variable as factor
-    rf_model <- randomForest(x = train_data[, subset_feat_cols], 
-                             y = as.factor(train_data$condition), 
-                             ntree = 500, importance = TRUE) 
-    
-    # evaluate on test set
-    test_predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
-    test_probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
-    
-    # evaluate model on training set
-    train_predictions <- predict(rf_model, newdata = train_data[, subset_feat_cols], type = "response")
-    train_probabilities <- predict(rf_model, newdata = train_data[, subset_feat_cols], type = "prob")
-    
-    # calculate AUC on test set
-    test_roc_obj <- roc(response = test_data$condition,
-                        predictor = test_probabilities[, "disease"],
-                        levels = c("healthy", "disease"),
-                        direction = "<")
-    test_auc_value <- auc(test_roc_obj)
-    
-    # store test ROC coordinates
-    test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
-                              sensitivity = test_roc_obj$sensitivities,
-                              Repeat = r, Fold = f, Set = "Test")
-    
-    # calculate AUC on train set
-    train_roc_obj <- roc(response = train_data$condition,
-                         predictor = train_probabilities[, "disease"],
-                         levels = c("healthy", "disease"),
-                         direction = "<")
-    train_auc <- auc(train_roc_obj)
-    
-    # store train ROC coordinates
-    train_roc_df <- data.frame(specificity = train_roc_obj$specificities,
-                               sensitivity = train_roc_obj$sensitivities,
-                               Repeat = r, Fold = f, Set = "Train")
-    
-    # count how often each feature is used in the trees
-    tree_split_vars <- unlist(lapply(1:rf_model$ntree, function(t) {
-      tree <- getTree(rf_model, k = t, labelVar = TRUE)
-      as.character(tree$`split var`[tree$`split var` != "<leaf>"])
-    }))
-    # count the occurrences of each feature
-    split_counts <- table(tree_split_vars)
-    
-    # generate confusion matrices
-    test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
-    train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
-    
-    # store with repeat (r) and fold (f) index
-    key <- paste0("Repeat_", r, "_Fold_", f)
-    feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
-    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
-                                       train_cm = train_cm, train_auc = train_auc,
-                                       test_roc_df = test_roc_df, train_roc_df = train_roc_df) # store performance metrics (test and train)
-    feature_importances[[key]] <- importance(rf_model)  # store feature importances
-  }
-}
-
-
-### calculate feature frequencies
-all_splits <- bind_rows(feature_frequencies, .id = "Repeat_Fold") # combine frequencies into a single data.frame
-colnames(all_splits) <- c("Repeat_Fold", "Feature", "Count") # rename columns
-
-# summarize total and average counts
-feature_split_summary <- all_splits %>%
-  group_by(Feature) %>%
-  summarise(total_count = sum(Count, na.rm = TRUE),
-            mean_count = mean(Count, na.rm = TRUE),
-            n_models = n()) %>%
-  arrange(desc(total_count))
-head(feature_split_summary, 20)
-
-# calculate relative frequency of feature selection
-feature_split_summary <- feature_split_summary %>%
-  mutate(prop_models = n_models / length(feature_frequencies),
-         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
-
-# total number of models where feature was used at least once
-ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = n_models)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "Top 30 most frequently selected features - model",
-       x = "Feature", y = "Number of models")
-
-# average number of times feature was used in a split per tree (across all models) 
-ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
-  geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "Top 30 most frequently selected features - split",
-       x = "Feature", y = "Average splits per tree")
-
-
-### calculate feature importances
-# combine all feature_importances data.frames into one data.frame
-all_features_importances <- do.call(rbind, lapply(names(feature_importances), function(name) {
-  df <- as.data.frame(feature_importances[[name]])
-  df$Feature <- rownames(df)
-  df$Repeat_Fold <- name
-  return(df)
-}))
-
-# group importance metrics by feature and sort by overall importance
-mean_importance <- all_features_importances %>%
-  group_by(Feature) %>%
-  summarise(mean_healthy = mean(healthy, na.rm = TRUE),
-            mean_disease = mean(disease, na.rm = TRUE),
-            mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
-            mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
-  arrange(desc(mean_MeanDecreaseAccuracy))
-head(mean_importance, 20)
-
-
-### plot features with highest MeanDecreaseAccuracy
-ggplot(boruta_df, aes(x = beta.alanine)) +
-  geom_density(aes(fill = condition), alpha = 0.5) +
-  labs(title = "Abundance of discriminative features",
-       subtitle = "Beta alanine",
-       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
-  theme_minimal()
-
-ggplot(boruta_df, aes(x = myristate..14.0.)) +
-  geom_density(aes(fill = condition), alpha = 0.5) +
-  labs(title = "Abundance of discriminative features",
-       subtitle = "Myristate..14.0.",
-       x = "log2(Abundance)", y = "Density of Samples", fill = "Condition") +
-  theme_minimal()
-
-
-### calculate performance statistics
-perf_stats(performance_metrics, type = "test")
-perf_stats(performance_metrics, type = "train")
-perf_stats(performance_metrics, type = "gap")
-
-
-### plot average ROC curve across folds
-plot_roc(performance_metrics)
-
-
 ##################################################################
 ###   RANDOM FOREST - OPTIMAL HYPERPARAMETER VALUES - CLASSWT  ###
 ##################################################################
 
 # data to be used in the model
-str(boruta_df)
+str(metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(metabo), "condition")
 
 # create list of class weight settings
 weight_grid <- list(healthy = c(healthy = 2, disease = 1),
@@ -642,20 +433,22 @@ for (i in names(weight_grid)) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    folds <- createFolds(metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                                y = as.factor(train_data$condition),
-                               ntree = 500, importance = TRUE, classwt = classwt)
+                               ntree = 500, 
+                               importance = TRUE, 
+                               classwt = classwt)
       
       # evaluate on test set
       test_predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
@@ -670,7 +463,7 @@ for (i in names(weight_grid)) {
                           predictor = test_probabilities[, "disease"],
                           levels = c("healthy", "disease"),
                           direction = "<")
-      test_auc_value <- auc(test_roc_obj)
+      test_auc <- auc(test_roc_obj)
       
       # store test ROC coordinates
       test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -693,9 +486,10 @@ for (i in names(weight_grid)) {
       test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
-      # store with repeat (r) and fold (f) index
+      
+      ### store with repeat (r) and fold (f) index
       key <- paste0("classwt", i, "_Repeat_", r, "_Fold_", f)
-      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
                                          param_value = i) # store performance metrics (test and train)
@@ -857,7 +651,7 @@ grid_plot_roc <- function(performance_metrics) {
     geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
     scale_color_manual(values = c("Train" = "indianred3", "Test" = "steelblue")) +
     scale_fill_manual(values = c("Train" = "indianred3", "Test" = "steelblue")) +
-    labs(title = "Average ROC curves across nested CV folds",
+    labs(title = "Average ROC curves across CV folds",
          x = "False positive rate (1 - specificity)", y = "True positive rate (sensitivity)", 
          color = "Dataset", fill = "Dataset")
   
@@ -872,10 +666,10 @@ grid_plot_roc(performance_metrics)
 ################################################################
 
 # data to be used in the model
-str(boruta_df)
+str(metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(metabo), "condition")
 
 # ntree values to test
 ntree_values <- c(125, 250, 500, 1000, 2000)
@@ -893,20 +687,21 @@ for (i in ntree_values) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    folds <- createFolds(metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                                y = as.factor(train_data$condition),
-                               ntree = i, importance = TRUE)
+                               ntree = i, 
+                               importance = TRUE)
       
       # evaluate on test set
       test_predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
@@ -921,7 +716,7 @@ for (i in ntree_values) {
                           predictor = test_probabilities[, "disease"],
                           levels = c("healthy", "disease"),
                           direction = "<")
-      test_auc_value <- auc(test_roc_obj)
+      test_auc <- auc(test_roc_obj)
       
       # store test ROC coordinates
       test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -944,9 +739,10 @@ for (i in ntree_values) {
       test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
-      # store with repeat (r) and fold (f) index
+      
+      ### store with repeat (r) and fold (f) index
       key <- paste0("ntree_", i, "_Repeat_", r, "_Fold_", f)
-      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
                                          param_value = i) # store performance metrics (test and train)
@@ -970,10 +766,10 @@ grid_plot_roc(performance_metrics)
 ###############################################################
 
 # data to be used in the model
-str(boruta_df)
+str(metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(metabo), "condition")
 
 # mtry values to test
 mtry_values <- c(1, 2, 3, 4, 5, 6)
@@ -991,20 +787,22 @@ for (i in mtry_values) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    folds <- createFolds(metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                                y = as.factor(train_data$condition),
-                               ntree = 500, importance = TRUE, mtry = i)
+                               ntree = 500, 
+                               importance = TRUE, 
+                               mtry = i)
       
       # evaluate on test set
       test_predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
@@ -1019,7 +817,7 @@ for (i in mtry_values) {
                           predictor = test_probabilities[, "disease"],
                           levels = c("healthy", "disease"),
                           direction = "<")
-      test_auc_value <- auc(test_roc_obj)
+      test_auc <- auc(test_roc_obj)
       
       # store test ROC coordinates
       test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -1042,9 +840,10 @@ for (i in mtry_values) {
       test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
-      # store with repeat (r) and fold (f) index
+      
+      ### store with repeat (r) and fold (f) index
       key <- paste0("mtry_", i, "_Repeat_", r, "_Fold_", f)
-      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
                                          param_value = i) # store performance metrics (test and train)
@@ -1067,10 +866,10 @@ grid_plot_roc(performance_metrics)
 ###################################################################
 
 # data to be used in the model
-str(boruta_df)
+str(metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(metabo), "condition")
 
 # nodesize values to test
 nodesize_values <- c(1, 2, 3, 4, 5, 6)
@@ -1088,20 +887,22 @@ for (i in nodesize_values) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+    folds <- createFolds(metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
                                y = as.factor(train_data$condition),
-                               ntree = 500, importance = TRUE, nodesize = i)
+                               ntree = 500, 
+                               importance = TRUE, 
+                               nodesize = i)
       
       # evaluate on test set
       test_predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
@@ -1116,7 +917,7 @@ for (i in nodesize_values) {
                           predictor = test_probabilities[, "disease"],
                           levels = c("healthy", "disease"),
                           direction = "<")
-      test_auc_value <- auc(test_roc_obj)
+      test_auc <- auc(test_roc_obj)
       
       # store test ROC coordinates
       test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -1139,9 +940,10 @@ for (i in nodesize_values) {
       test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
       train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
       
-      # store with repeat (r) and fold (f) index
+      
+      ### store with repeat (r) and fold (f) index
       key <- paste0("nodesize_", i, "_Repeat_", r, "_Fold_", f)
-      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+      performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
                                          param_value = i) # store performance metrics (test and train)
@@ -1164,10 +966,10 @@ grid_plot_roc(performance_metrics)
 ###########################################################################################################
 
 # data to be used in the model
-str(boruta_df)
+str(metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(metabo), "condition")
 
 # create list of class weight settings
 weight_grid <- list(healthy = c(healthy = 2, disease = 1),
@@ -1200,7 +1002,7 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
   for (r in 1:repeats) {
     
     #  create 5-folds for cross-validation (stratified on condition)
-    folds <- caret::createFolds(boruta_df$condition, k = 5, list = TRUE, returnTrain = FALSE)
+    folds <- caret::createFolds(metabo$condition, k = 5, list = TRUE, returnTrain = FALSE)
     fold_aucs <- numeric(length(folds))
     
     # loop through the folds
@@ -1208,8 +1010,8 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-      test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+      train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
@@ -1243,18 +1045,18 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
 
 
 # define parameter bounds
-bounds <- list(mtry = c(1L, length(selected_features)),
+bounds <- list(mtry = c(1L, 30L),
                ntree = c(100L, 1000L),
-               nodesize = c(1L, length(selected_features)),
+               nodesize = c(1L, 6L),
                classwt_label = c(1L, length(label_keys))) # numeric range for classwt_label
 
-# resister back end
+# register back end
 doParallel::registerDoParallel(parallel::detectCores() - 1)
 
 set.seed(1234)
 optObj <- bayesOpt(FUN = scoring_function,
                    bounds = bounds,
-                   initPoints = 20,
+                   initPoints = 10,
                    iters.n = 10,
                    acq = "ei",
                    parallel = TRUE,
@@ -1270,55 +1072,154 @@ head(optObj$scoreSummary[order(-Score), ])
 bestparams = getBestPars(optObj)
 
 
-############################################################################################################
-########   RANDOM FOREST - EVALUATION OF MODEL WITH BEST HYPERPARAMETERS FROM BAYESIAN OPTIMISATION  #######
-############################################################################################################
+########################################################################################
+########   RANDOM FOREST - BAYESIAN OPTIMIZATION OF HYPERPARAMETERS - NESTED CV  #######
+########################################################################################
 
 # data to be used in the model
-str(boruta_df)
+str(metabo)
+is.factor(metabo$condition) # condition needs to be a factor
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(boruta_df), "condition")
+subset_feat_cols <- setdiff(colnames(metabo), "condition")
+
+
+# create list of class weight settings
+weight_grid <- list(healthy = c(healthy = 2, disease = 1),
+                    equal = c(healthy = 1, disease = 1),
+                    disease = c(healthy = 1, disease = 2))
+
+# define the set of categorical labels with numeric indices
+label_keys <- c("healthy", "equal", "disease")
+
+
+# set outer and inner loop parameters
+outer_repeats <- 10
+outer_folds <- 3
+inner_repeats <- 10
+inner_folds <- 3
 
 # create lists to store metrics
 feature_importances <- list() # list to store feature importances
 performance_metrics <- list() # list to store performance metrics
 feature_frequencies <- list() # list to store feature selection frequencies
+best_hyperparameters <-list() # list to store optimal hyperparameters
 
-# optimal hyperparameter values
-mtry_opt <- bestparams$mtry
-ntree_opt <- bestparams$ntree
-nodesize_opt <- bestparams$nodesize
-classwt_opt <- weight_grid[[label_keys[bestparams$classwt_label]]]
-
-# repeat cross-validation 50 times
-for (r in 1:50) {
-  cat("Repeat:", r, "\n")
+### outer loop
+for (r in 1:outer_repeats) {
   
+  # create outer_folds-folds for cross-validation (stratified on condition)
   set.seed(1234 + r*100)
-  # create 5-folds for cross-validation (stratified on condition)
-  folds <- createFolds(boruta_df$condition, k = 5, list = TRUE)
+  outer_folds_list <- createFolds(metabo$condition, k = outer_folds, list = TRUE)
   
   # loop through the folds
-  for (f in 1:5) {
+  for (f in 1:outer_folds) {
+    cat("Fold ", f, " of Repeat ", r, "\n")
     
-    # splits the dataset into training and testing sets for the current fold
-    test_idx <- folds[[f]] # test indices for the f-th fold
-    train_data <- boruta_df[-test_idx, ] # training data (all rows not in fold f)
-    test_data  <- boruta_df[test_idx, ] # testing data (fold f)
+    # split dataset into training and testing sets for the current fold
+    test_idx <- outer_folds_list[[f]] # test indices for the f-th fold
+    train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+    test_data <- metabo[test_idx, ] # testing data (fold f)
     
-    # train random forest model
-    # x = all data in data.frame subset by subset_feat_cols (predictor values)
-    # y = target variable as factor
-    rf_model <- randomForest(x = train_data[, subset_feat_cols], 
-                             y = as.factor(train_data$condition), 
-                             mtry = mtry_opt,
-                             ntree = ntree_opt,
-                             nodesize = nodesize_opt,
-                             classwt = classwt_opt,
+    
+    ### inner loop: Bayesian hyperparameter optimization
+    
+    # scoring function
+    scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
+      
+      # parameters
+      mtry <- as.integer(mtry)
+      ntree <- as.integer(ntree)
+      nodesize <- as.integer(nodesize)
+      
+      # convert numeric index of classwt_label back to character label for scoring function
+      classwt_label <- as.integer(classwt_label)
+      label_str <- label_keys[classwt_label]
+      classwt <- weight_grid[[label_str]]
+      
+      repeat_auc <- numeric(inner_repeats)
+      
+      # loop over each repeat
+      for (inner_r in 1:inner_repeats) {
+        
+        # create folds for cross-validation (stratified on condition)
+        inner_folds_list <- caret::createFolds(train_data$condition, k = inner_folds, list = TRUE, returnTrain = FALSE)
+        fold_aucs <- numeric(length(inner_folds_list))
+        
+        # loop through the folds
+        for (inner_f in seq_along(inner_folds_list)) {
+          
+          # splits the dataset into training and testing sets for the current fold
+          inner_test_idx <- inner_folds_list[[inner_f]] # test indices for the f-th fold
+          inner_train_data <- train_data[-inner_test_idx, ] # training data (all rows not in fold f)
+          inner_test_data <- train_data[inner_test_idx, ] # testing data (fold f)
+          
+          # train random forest model using full features to rank features
+          rf_model <- randomForest(x = inner_train_data[, subset_feat_cols], 
+                                   y = as.factor(inner_train_data$condition),
+                                   mtry = mtry,
+                                   ntree = ntree, 
+                                   nodesize = nodesize,
+                                   classwt = classwt,
+                                   importance = TRUE)
+          
+          # evaluate on test set
+          probabilities <- predict(rf_model, newdata = inner_test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
+          
+          # calculate AUC
+          roc_obj <- tryCatch({
+            roc(response = inner_test_data$condition,
+                predictor = probabilities[, "disease"],
+                levels = c("healthy", "disease"),
+                direction = "<")
+          }, error = function(e) return(NULL))
+          
+          fold_aucs[inner_f] <- if (!is.null(roc_obj)) auc(roc_obj) else NA
+        }
+        
+        repeat_auc[inner_r] <- mean(fold_aucs, na.rm = TRUE)
+      }
+      
+      return(list(Score = mean(repeat_auc, na.rm = TRUE)))
+    }
+    
+    # define parameter bounds
+    bounds <- list(mtry = c(1L, 30L),
+                   ntree = c(100L, 1000L),
+                   nodesize = c(1L, 6L),
+                   classwt_label = c(1L, length(label_keys))) # numeric range for classwt_label
+    
+    # register back end
+    doParallel::registerDoParallel(parallel::detectCores() - 1)
+    
+    set.seed(1234 + r*1000 + f*10)
+    optObj <- bayesOpt(FUN = scoring_function,
+                       bounds = bounds,
+                       initPoints = 10,
+                       iters.n = 10,
+                       acq = "ei",
+                       parallel = TRUE,
+                       verbose = 1)
+    
+    # unregister the backend
+    registerDoSEQ()
+    
+    # get best hyperparameter values
+    bestparams = getBestPars(optObj)
+    best_hyperparameters[[paste0("Repeat_", r, "_Fold_", f)]] <- bestparams
+    classwt_best <- weight_grid[[label_keys[bestparams$classwt_label]]]
+    
+    
+    # train random forest model on the outer training data using best hyperparameters values
+    rf_model <- randomForest(x = train_data[, subset_feat_cols],
+                             y = as.factor(train_data$condition),
+                             mtry = as.integer(bestparams$mtry),
+                             ntree = as.integer(bestparams$ntree),
+                             nodesize = as.integer(bestparams$nodesize),
+                             classwt = classwt_best,
                              importance = TRUE) 
     
-    # evaluate on test set
+    # evaluate on outer test set
     test_predictions <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "response") # predicted class labels for cm
     test_probabilities <- predict(rf_model, newdata = test_data[, subset_feat_cols], type = "prob") # class probabilities (ROC/AUC)
     
@@ -1331,7 +1232,7 @@ for (r in 1:50) {
                         predictor = test_probabilities[, "disease"],
                         levels = c("healthy", "disease"),
                         direction = "<")
-    test_auc_value <- auc(test_roc_obj)
+    test_auc <- auc(test_roc_obj)
     
     # store test ROC coordinates
     test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -1355,6 +1256,7 @@ for (r in 1:50) {
       tree <- getTree(rf_model, k = t, labelVar = TRUE)
       as.character(tree$`split var`[tree$`split var` != "<leaf>"])
     }))
+    
     # count the occurrences of each feature
     split_counts <- table(tree_split_vars)
     
@@ -1362,43 +1264,38 @@ for (r in 1:50) {
     test_cm <- confusionMatrix(test_predictions, as.factor(test_data$condition), positive = "disease")
     train_cm <- confusionMatrix(train_predictions, as.factor(train_data$condition), positive = "disease")
     
-    # store with repeat (r) and fold (f) index
+    
+    ### store with repeat (r) and fold (f) index
     key <- paste0("Repeat_", r, "_Fold_", f)
     feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
-    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                        train_cm = train_cm, train_auc = train_auc,
                                        test_roc_df = test_roc_df, train_roc_df = train_roc_df) # store performance metrics (test and train)
     feature_importances[[key]] <- importance(rf_model)  # store feature importances
   }
 }
 
-### calculate feature frequencies
-all_splits <- bind_rows(feature_frequencies, .id = "Repeat_Fold") # combine frequencies into a single data.frame
-colnames(all_splits) <- c("Repeat_Fold", "Feature", "Count") # rename columns
 
-# summarize total and average counts
-feature_split_summary <- all_splits %>%
-  group_by(Feature) %>%
-  summarise(total_count = sum(Count, na.rm = TRUE),
-            mean_count = mean(Count, na.rm = TRUE),
+### calculate feature frequencies and relative frequency of feature selection
+feature_split_summary <- bind_rows(feature_frequencies, .id = "Repeat_Fold") %>%
+  rename(Feature = tree_split_vars) %>%
+  group_by(Feature) %>% # group stability metrics by feature
+  summarise(total_count = sum(Freq, na.rm = TRUE),
+            mean_count = mean(Freq, na.rm = TRUE),
             n_models = n()) %>%
-  arrange(desc(total_count))
-head(feature_split_summary, 20)
-
-# calculate relative frequency of feature selection
-feature_split_summary <- feature_split_summary %>%
   mutate(prop_models = n_models / length(feature_frequencies),
-         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree)) %>%
+  arrange(desc(total_count))
+head(as.data.frame(feature_split_summary), 20)
 
 # total number of models where feature was used at least once
-ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = n_models)) +
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = n_models)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
-  labs(title = "Top 30 most frequently selected features - models",
+  labs(title = "Top 30 most frequently selected features - model",
        x = "Feature", y = "Number of models")
 
 # average number of times feature was used in a split per tree (across all models) 
-# 250 models (50 repeats x 5-fold CV) each with 500 trees (125,000 trees in total)
-ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+ggplot(feature_split_summary[1:30, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = "Top 30 most frequently selected features - split",
        x = "Feature", y = "Average splits per tree")
@@ -1413,7 +1310,7 @@ all_features_importances <- do.call(rbind, lapply(names(feature_importances), fu
   return(df)
 }))
 
-# group importance metrics by feature and sort by overall importance
+# group importance metrics by feature
 mean_importance <- all_features_importances %>%
   group_by(Feature) %>%
   summarise(mean_healthy = mean(healthy, na.rm = TRUE),
@@ -1421,26 +1318,52 @@ mean_importance <- all_features_importances %>%
             mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
             mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
   arrange(desc(mean_MeanDecreaseAccuracy))
-head(mean_importance, 20)
+head(as.data.frame(mean_importance), 20)
 
-
-### plot features with highest MeanDecreaseAccuracy
-ggplot(boruta_df, aes(x = beta.alanine)) +
+# plot features with highest MeanDecreaseAccuracy
+ggplot(metabo, aes(x = beta.alanine)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Beta alanine",
        x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
-ggplot(boruta_df, aes(x = myristate..14.0.)) +
-  geom_density(aes(fill = condition), alpha = 0.5) +
-  labs(title = "Abundance of discriminative features",
-       subtitle = "Myristate..14.0.",
-       x = "Abundance", y = "Density of samples", fill = "Condition") +
-  theme_minimal()
+
+### combine feature stabilities and importances
+feature_split_importance <- left_join(feature_split_summary, mean_importance, by = "Feature") %>%
+  arrange(desc(avg_per_tree))
+head(as.data.frame(feature_split_importance), 20)
+
+# plot split frequency versus feature importance
+# top 20 features by split frequency
+top_features <- feature_split_importance %>% 
+  slice(1:20) # top 20 features by split frequency
+
+# plot meanMDA versus split frequency
+ggplot(top_features, aes(x = avg_per_tree, y = mean_MeanDecreaseAccuracy, label = Feature)) +
+  geom_point(color = "steelblue", size = 3) + geom_text_repel(size = 3, max.overlaps = 8) + theme_minimal() +
+  labs(x = "Split frequency", y = "Mean MDA",
+       title = "Split frequency versus permutation importance")
+
+# long data.frame for plotting importance by condition
+top_features_long <- top_features %>%
+  select(Feature, avg_per_tree, mean_healthy, mean_disease) %>%
+  pivot_longer(cols = c(mean_healthy, mean_disease),
+               names_to = "Condition",
+               values_to = "Importance") %>%
+  mutate(Condition = recode(Condition,
+                            mean_healthy = "Healthy",
+                            mean_disease = "Disease"))
+
+# plot meanMDA by condition versus split frequency
+ggplot(top_features_long, aes(x = avg_per_tree, y = Importance, color = Condition)) +
+  geom_point(size = 3, alpha = 0.7) + theme_minimal() +
+  labs(x = "Split frequency", y = "Mean MDA by condition",
+       title = "Split frequency versus permutation importance by condition", color = "Condition") +
+  scale_color_manual(values = c("Healthy" = "steelblue", "Disease" = "indianred3"))
 
 
-### calculate performance statistics
+### calculate overall performance statistics
 perf_stats(performance_metrics, type = "test")
 perf_stats(performance_metrics, type = "train")
 perf_stats(performance_metrics, type = "gap")
@@ -1450,20 +1373,68 @@ perf_stats(performance_metrics, type = "gap")
 plot_roc(performance_metrics)
 
 
-#######################################################################
-########   RANDOM FOREST - NESTED CV - BORUTA FEATURE SELCTION  #######
-#######################################################################
+### best hyperparameters
+hyperparameters <- do.call(rbind, lapply(names(best_hyperparameters), function(name) {
+  df <- as.data.frame(t(best_hyperparameters[[name]]))
+  df$Repeat_Fold <- name
+  return(df)
+}))
+hyperparameters <- hyperparameters %>% select(Repeat_Fold, everything())
+head(hyperparameters, 20)
+
+# data frame of performance and hyperparameter values
+hyper_perf <- do.call(rbind, lapply(names(performance_metrics), function(key) {
+  perf <- performance_metrics[[key]]
+  auc_test <- perf$test_auc
+  auc_train <- perf$train_auc
+  
+  # get hyperparameters
+  hyper <- best_hyperparameters[[key]]
+  
+  df <- data.frame(Repeat_Fold = key,
+                   auc_test = auc_test,
+                   auc_train = auc_train,
+                   mtry = as.integer(hyper["mtry"]),
+                   ntree = as.integer(hyper["ntree"]),
+                   nodesize = as.integer(hyper["nodesize"]),
+                   classwt_label = as.integer(hyper["classwt_label"]))
+  return(df)
+}))
+
+hyper_perf
+
+# long format for faceting
+hyper_perf_long <- hyper_perf %>%
+  pivot_longer(cols = c(mtry, ntree, nodesize, classwt_label),
+               names_to = "hyperparameter",
+               values_to = "param_value")
+
+# facetted plot of hyperparameter versus test auc
+ggplot(hyper_perf_long, aes(x = param_value, y = auc_test)) +
+  geom_point(alpha = 0.7) + geom_smooth(method = "loess") +
+  facet_wrap(~ hyperparameter, scales = "free_x") +  theme_minimal() +
+  labs(x = "Hyperparameter value", y = "Test AUC",
+       title = "Test AUC vs Hyperparameters")
+
+hyper_cor <- sapply(c("mtry", "ntree", "nodesize", "classwt_label"), 
+                    function(col) cor(hyper_perf$auc_test, hyper_perf[[col]], use = "complete.obs"))
+hyper_cor
+
+
+############################################################
+########   RANDOM FOREST - BORUTA FEATURE SELECTION  #######
+############################################################
 
 # data to be used in the model
-str(metabo_df)
-is.factor(metabo_df$condition) # condition needs to be a factor
+str(metabo)
+is.factor(metabo$condition) # condition needs to be a factor
 
 # set outer and inner loop parameters
 outer_repeats <- 10
 outer_folds <- 5
-boruta_repeats <- 50
+boruta_repeats <- 10
 
-# create list to store metrics
+# create lists to store metrics
 stable_feature_frequencies <- list() # list to store stable feature selection frequencies from Boruta
 feature_importances <- list() # list to store feature importances
 performance_metrics <- list() # list to store performance metrics
@@ -1474,7 +1445,7 @@ for (r in 1:outer_repeats) {
   
   # create outer_folds-folds for cross-validation (stratified on condition)
   set.seed(1234 + r*100)
-  outer_folds_list <- createFolds(metabo_df$condition, k = outer_folds, list = TRUE)
+  outer_folds_list <- createFolds(metabo$condition, k = outer_folds, list = TRUE)
   
   # loop through the folds
   for (f in 1:outer_folds) {
@@ -1482,8 +1453,8 @@ for (r in 1:outer_repeats) {
     
     # split dataset into training and testing sets for the current fold
     test_idx <- outer_folds_list[[f]] # test indices for the f-th fold
-    train_data <- metabo_df[-test_idx, ] # training data (all rows not in fold f)
-    test_data  <- metabo_df[test_idx, ] # testing data (fold f)
+    train_data <- metabo[-test_idx, ] # training data (all rows not in fold f)
+    test_data <- metabo[test_idx, ] # testing data (fold f)
     
     ### Boruta feature selection
     boruta_metrics_list <- list() # list to store Boruta metrics
@@ -1540,10 +1511,7 @@ for (r in 1:outer_repeats) {
     set.seed(1234 + r*100000 + f*1000)
     rf_model <- randomForest(x = train_subset[, subset_feat_cols], 
                              y = as.factor(train_subset$condition), 
-                             mtry = round(sqrt(length(selected_features))),
                              ntree = 500,
-                             nodesize = 3,
-                             classwt = c(healthy = 1, disease = 1),
                              importance = TRUE) 
     
     # evaluate on test set
@@ -1559,7 +1527,7 @@ for (r in 1:outer_repeats) {
                         predictor = test_probabilities[, "disease"],
                         levels = c("healthy", "disease"),
                         direction = "<")
-    test_auc_value <- auc(test_roc_obj)
+    test_auc <- auc(test_roc_obj)
     
     # store test ROC coordinates
     test_roc_df <- data.frame(specificity = test_roc_obj$specificities,
@@ -1591,10 +1559,11 @@ for (r in 1:outer_repeats) {
     test_cm <- confusionMatrix(test_predictions, as.factor(test_subset$condition), positive = "disease")
     train_cm <- confusionMatrix(train_predictions, as.factor(train_subset$condition), positive = "disease")
     
-    # store with repeat (r) and fold (f) index
+    
+    ### store with repeat (r) and fold (f) index
     key <- paste0("Repeat_", r, "_Fold_", f)
     feature_frequencies[[key]] <- as.data.frame(split_counts) # store feature frequencies
-    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc_value, 
+    performance_metrics[[key]] <- list(test_cm = test_cm, test_auc = test_auc, 
                                        train_cm = train_cm, train_auc = train_auc,
                                        test_roc_df = test_roc_df, train_roc_df = train_roc_df) # store performance metrics (test and train)
     feature_importances[[key]] <- importance(rf_model)  # store feature importances
@@ -1605,34 +1574,44 @@ for (r in 1:outer_repeats) {
 boruta_selected_summary <- bind_rows(stable_feature_frequencies, .id = "Repeat_Fold") %>%
   group_by(Feature) %>%
   summarise(n_selected_models = n(), # how many folds the feature appeared in
-            overall_selection_rate = n_selected_models/length(stable_feature_frequencies), # how stable the feature was cross nested cv
-            mean_medianImp = mean(mean_medianImp)) %>% # average importance of feature across nested cv
+            overall_selection_rate = n_selected_models/length(stable_feature_frequencies), # stability of the feature
+            mean_medianImp = mean(mean_medianImp)) %>% # average importance of feature
   arrange(desc(overall_selection_rate))
 head(as.data.frame(boruta_selected_summary), 20)
 
-### calculate feature frequencies
+# plot stable features ranked by average median importance
+ggplot(boruta_selected_summary[1:30, ], aes(x = reorder(Feature, mean_medianImp), y = mean_medianImp)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
+  labs(title = "Average median importance of confirmed features",
+       x = "Feature", y = "Mean median importance")
+
+# plot features selection frequency
+ggplot(boruta_selected_summary[1:30, ], aes(x = reorder(Feature, overall_selection_rate), y = overall_selection_rate)) +
+  geom_col(fill = "steelblue") + coord_flip() + theme_minimal(base_size = 12) +
+  labs(title = "Proportion of Boruta repeats selecting each feature",
+       x = "Feature", y = "Proportion of Runs")  
+
+
+### calculate feature frequencies and relative frequency of feature selection
 feature_split_summary <- bind_rows(feature_frequencies, .id = "Repeat_Fold") %>%
   rename(Feature = tree_split_vars) %>%
-  group_by(Feature) %>%
+  group_by(Feature) %>% # group stability metrics by feature
   summarise(total_count = sum(Freq, na.rm = TRUE),
             mean_count = mean(Freq, na.rm = TRUE),
             n_models = n()) %>%
-  arrange(desc(total_count))
-
-# calculate relative frequency of feature selection
-feature_split_summary <- feature_split_summary %>%
   mutate(prop_models = n_models / length(feature_frequencies),
-         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree))
+         avg_per_tree = total_count / (length(feature_frequencies) * rf_model$ntree)) %>%
+  arrange(desc(total_count))
 head(as.data.frame(feature_split_summary), 20)
 
 # total number of models where feature was used at least once
-ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = n_models)) +
+ggplot(feature_split_summary[1:20, ], aes(x = reorder(Feature, n_models), y = n_models)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = "Top 30 most frequently selected features - model",
        x = "Feature", y = "Number of models")
 
 # average number of times feature was used in a split per tree (across all models) 
-ggplot(feature_split_summary[1:length_feat, ], aes(x = reorder(Feature, total_count), y = avg_per_tree)) +
+ggplot(feature_split_summary[1:20, ], aes(x = reorder(Feature, avg_per_tree), y = avg_per_tree)) +
   geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
   labs(title = "Top 30 most frequently selected features - split",
        x = "Feature", y = "Average splits per tree")
@@ -1647,7 +1626,7 @@ all_features_importances <- do.call(rbind, lapply(names(feature_importances), fu
   return(df)
 }))
 
-# group importance metrics by feature and sort by overall importance
+# group importance metrics by feature
 mean_importance <- all_features_importances %>%
   group_by(Feature) %>%
   summarise(mean_healthy = mean(healthy, na.rm = TRUE),
@@ -1655,28 +1634,49 @@ mean_importance <- all_features_importances %>%
             mean_MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy, na.rm = TRUE),
             mean_MeanDecreaseGini = mean(MeanDecreaseGini, na.rm = TRUE)) %>%
   arrange(desc(mean_MeanDecreaseAccuracy))
-
-# group importance metrics by feature and sort by average selection per tree
-mean_importance <- left_join(mean_importance, feature_split_summary %>% 
-                               select(Feature, avg_per_tree), by = "Feature") %>%
-  arrange(desc(avg_per_tree))
 head(as.data.frame(mean_importance), 20)
 
-
-### plot features with highest MeanDecreaseAccuracy
-ggplot(metabo_df, aes(x = beta.alanine)) +
+# plot features with highest MeanDecreaseAccuracy
+ggplot(metabo, aes(x = beta.alanine)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Beta alanine",
        x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
-ggplot(metabo_df, aes(x = myristate..14.0.)) +
-  geom_density(aes(fill = condition), alpha = 0.5) +
-  labs(title = "Abundance of discriminative features",
-       subtitle = "Myristate..14.0.",
-       x = "Abundance", y = "Density of samples", fill = "Condition") +
-  theme_minimal()
+
+### combine feature stabilities and importances
+feature_split_importance <- left_join(feature_split_summary, mean_importance, by = "Feature") %>%
+  arrange(desc(avg_per_tree))
+head(as.data.frame(feature_split_importance), 20)
+
+# plot split frequency versus feature importance
+# top 20 features by split frequency
+top_features <- feature_split_importance %>% 
+  slice(1:20) # top 20 features by split frequency
+
+# plot meanMDA versus split frequency
+ggplot(top_features, aes(x = avg_per_tree, y = mean_MeanDecreaseAccuracy, label = Feature)) +
+  geom_point(color = "steelblue", size = 3) + geom_text_repel(size = 3, max.overlaps = 8) + theme_minimal() +
+  labs(x = "Split frequency", y = "Mean MDA",
+       title = "Split frequency versus permutation importance")
+
+# long data.frame for plotting importance by condition
+top_features_long <- top_features %>%
+  select(Feature, avg_per_tree, mean_healthy, mean_disease) %>%
+  pivot_longer(cols = c(mean_healthy, mean_disease),
+               names_to = "Condition",
+               values_to = "Importance") %>%
+  mutate(Condition = recode(Condition,
+                            mean_healthy = "Healthy",
+                            mean_disease = "Disease"))
+
+# plot meanMDA by condition versus split frequency
+ggplot(top_features_long, aes(x = avg_per_tree, y = Importance, color = Condition)) +
+  geom_point(size = 3, alpha = 0.7) + theme_minimal() +
+  labs(x = "Split frequency", y = "Mean MDA by condition",
+       title = "Split frequency versus permutation importance by condition", color = "Condition") +
+  scale_color_manual(values = c("Healthy" = "steelblue", "Disease" = "indianred3"))
 
 
 ### calculate performance statistics
@@ -1689,25 +1689,22 @@ perf_stats(performance_metrics, type = "gap")
 plot_roc(performance_metrics)
 
 
-#####################################################################################
-########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BEST HYPERPARAMETERS  #######
-#####################################################################################
+################################################################################
+########   RANDOM FOREST MODEL - TRAIN FINAL MODEL WITH BORUTA FEATURES  #######
+################################################################################
 
 # features to be used in the model
-final_boruta_feats <- boruta_selected_summary %>%
+boruta_features_df <- boruta_selected_summary %>%
   arrange(desc(overall_selection_rate)) %>%
-  slice_head(n = 10)
-boruta_feats <- final_boruta_feats$Feature
+  slice_head(n = 20)
+boruta_features <- boruta_features_df$Feature
 
 
 # train the model on the full dataset
 set.seed(1234)
-final_model <- randomForest(x = metabo_df[, boruta_feats], 
-                            y = as.factor(metabo_df$condition), 
-                            mtry = 1,
+final_model <- randomForest(x = metabo[, boruta_features], 
+                            y = as.factor(metabo$condition), 
                             ntree = 500,
-                            nodesize = length_feat - 1,
-                            classwt = c(healthy = 1, disease = 1),
                             importance = TRUE)
 
 # # save final model
@@ -1727,7 +1724,7 @@ pred_fun <- function(object, newdata) {
 set.seed(1234) # set seed
 
 shap_values <- fastshap::explain(object = final_model,
-                                 X = metabo_df[, boruta_feats],
+                                 X = metabo[, boruta_features],
                                  pred_wrapper = pred_fun,
                                  nsim = 100, # number of Monte Carlo permutations
                                  adjust = TRUE) # centered SHAP values (baseline + sum of SHAPs = prediction)
@@ -1769,11 +1766,11 @@ dependence_plot <- function(shap_values, feature_matrix, feature_name, interacti
   return(p)
 }
 
-dependence_plot(shap_values = shap_values, feature_matrix = metabo_df[, boruta_feats], 
+dependence_plot(shap_values = shap_values, feature_matrix = metabo[, boruta_features], 
                 feature_name = "beta.alanine", 
                 interaction_feature = "phosphate")
 
-dependence_plot(shap_values = shap_values, feature_matrix = metabo_df[, boruta_feats], 
+dependence_plot(shap_values = shap_values, feature_matrix = metabo[, boruta_features], 
                 feature_name = "myristate..14.0.", 
                 interaction_feature = "X.24683")
 
@@ -1819,7 +1816,7 @@ beeswarm_plot <- function(shap_values, feature_matrix) {
 }
 
 beeswarm_plot(shap_values = shap_values, 
-              feature_matrix = metabo_df[, boruta_feats])
+              feature_matrix = metabo[, boruta_features])
 
 
 ### mean and absolute mean SHAP values
@@ -1905,7 +1902,7 @@ shap_importance <- function(final_model, shap_values,
 shap_importance(final_model = final_model, shap_values = shap_values, 
                 measure = "MeanDecreaseAccuracy", type = "mean_abs_shap")
 shap_importance(final_model = final_model, shap_values = shap_values, 
-                measure = "MeanDecreaseGini", type = "mean_shap")
+                measure = "MeanDecreaseGini", type = "mean_abs_shap")
 
 
 ### SHAP values by label/class
@@ -1939,9 +1936,9 @@ shap_by_class <- function(shap_values, dataset, label, type = "mean_abs_shap") {
   return(p)
 }
 
-shap_by_class(shap_values = shap_values, dataset = metabo_df, 
+shap_by_class(shap_values = shap_values, dataset = metabo, 
               label = "condition", type = "mean_abs_shap")
-shap_by_class(shap_values = shap_values, dataset = metabo_df, 
+shap_by_class(shap_values = shap_values, dataset = metabo, 
               label = "condition", type = "mean_shap")
 
 
@@ -1984,9 +1981,9 @@ feature_metrics <- function(shap_values, dataset, label, feature_name) {
   return(combined_plot)
 }
 
-feature_metrics(shap_values = shap_values, dataset = metabo_df, label = "condition",
+feature_metrics(shap_values = shap_values, dataset = metabo, label = "condition",
                 feature_name = "beta.alanine")
-feature_metrics(shap_values = shap_values, dataset = metabo_df, label = "condition",
+feature_metrics(shap_values = shap_values, dataset = metabo, label = "condition",
                 feature_name = "myristate..14.0.")
 
 
@@ -2012,12 +2009,12 @@ shap_pred_probs <- function(final_model, shap_values, dataset, feature_vector, l
 }
 
 shap_pred_probs(final_model = final_model, shap_values = shap_values, 
-                dataset = metabo_df, feature_vector = boruta_feats, 
+                dataset = metabo, feature_vector = boruta_features, 
                 label = "condition", positive_class = "disease", 
                 feature_name = "beta.alanine")
 
 shap_pred_probs(final_model = final_model, shap_values = shap_values, 
-                dataset = metabo_df, feature_vector = boruta_feats, 
+                dataset = metabo, feature_vector = boruta_features, 
                 label = "condition", positive_class = "disease", 
                 feature_name = "myristate..14.0.")
 
@@ -2025,15 +2022,15 @@ shap_pred_probs(final_model = final_model, shap_values = shap_values,
 ### fastshap does not calculate second-order SHAP effects
 # partial dependence (PDP) interaction plots (how much each feature interacts with others)
 library(iml)
-predictor <- Predictor$new(final_model, data = metabo_df[, boruta_feats], y = metabo_df$condition, type = "prob")
+predictor <- Predictor$new(final_model, data = metabo[, boruta_features], y = metabo$condition, type = "prob")
 interaction_strength <- Interaction$new(predictor)
 plot(interaction_strength)
 
 
 sessionInfo()
-# R version 4.5.0 (2025-04-11)
+# R version 4.5.2 (2025-10-31)
 # Platform: aarch64-apple-darwin20
-# Running under: macOS Sequoia 15.6.1
+# Running under: macOS Tahoe 26.2
 # 
 # Matrix products: default
 # BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
@@ -2046,41 +2043,42 @@ sessionInfo()
 # tzcode source: internal
 # 
 # attached base packages:
-#   [1] parallel  stats     graphics  grDevices utils     datasets  methods   base     
+#   [1] grid      tools     stats4    splines   compiler  parallel  stats     graphics  grDevices utils     datasets 
+# [12] methods   base     
 # 
 # other attached packages:
-#   [1] ggrepel_0.9.6                 DiceKriging_1.6.0            
-# [3] viridis_0.6.5                 viridisLite_0.4.2            
-# [5] fastshap_0.1.1                doParallel_1.0.17            
-# [7] iterators_1.0.14              foreach_1.5.2                
-# [9] ParBayesianOptimization_1.2.6 Boruta_9.0.0                 
-# [11] pROC_1.19.0.1                 caret_7.0-1                  
-# [13] lattice_0.22-7                randomForest_4.7-1.2         
-# [15] impute_1.82.0                 readxl_1.4.5                 
-# [17] lubridate_1.9.4               forcats_1.0.0                
-# [19] stringr_1.5.1                 dplyr_1.1.4                  
-# [21] purrr_1.1.0                   readr_2.1.5                  
-# [23] tidyr_1.3.1                   tibble_3.3.0                 
-# [25] tidyverse_2.0.0               ggplot2_3.5.2                
-# 
-# loaded via a namespace (and not attached):
-#   [1] tidyselect_1.2.1     timeDate_4041.110    farver_2.1.2         digest_0.6.37       
-# [5] rpart_4.1.24         timechange_0.3.0     lifecycle_1.0.4      survival_3.8-3      
-# [9] magrittr_2.0.3       dbscan_1.2.2         compiler_4.5.0       rlang_1.1.6         
-# [13] tools_4.5.0          utf8_1.2.6           data.table_1.17.8    ggsignif_0.6.4      
-# [17] labeling_0.4.3       plyr_1.8.9           RColorBrewer_1.1-3   abind_1.4-8         
-# [21] withr_3.0.2          nnet_7.3-20          grid_4.5.0           stats4_4.5.0        
-# [25] ggpubr_0.6.1         e1071_1.7-16         future_1.67.0        globals_0.18.0      
-# [29] scales_1.4.0         MASS_7.3-65          dichromat_2.0-0.1    cli_3.6.5           
-# [33] crayon_1.5.3         generics_0.1.4       rstudioapi_0.17.1    future.apply_1.20.0 
-# [37] reshape2_1.4.4       tzdb_0.5.0           proxy_0.4-27         splines_4.5.0       
-# [41] cellranger_1.1.0     vctrs_0.6.5          hardhat_1.4.1        Matrix_1.7-3        
-# [45] carData_3.0-5        car_3.1-3            hms_1.1.3            rstatix_0.7.2       
-# [49] Formula_1.2-5        listenv_0.9.1        gower_1.0.2          recipes_1.3.1       
-# [53] glue_1.8.0           parallelly_1.45.1    codetools_0.2-20     stringi_1.8.7       
-# [57] gtable_0.3.6         pillar_1.11.0        ipred_0.9-15         lava_1.8.1          
-# [61] R6_2.6.1             lhs_1.2.0            backports_1.5.0      broom_1.0.9         
-# [65] class_7.3-23         Rcpp_1.1.0           gridExtra_2.3        nlme_3.1-168        
-# [69] prodlim_2025.04.28   mgcv_1.9-3           ranger_0.17.0        ModelMetrics_1.2.2.2
-# [73] pkgconfig_2.0.3 
+#   [1] MASS_7.3-65                   hardhat_1.4.2                 lifecycle_1.0.4              
+# [4] farver_2.1.2                  digest_0.6.39                 rstatix_0.7.3                
+# [7] gtable_0.3.6                  lava_1.8.2                    cli_3.6.5                    
+# [10] Formula_1.2-5                 ipred_0.9-15                  ggsignif_0.6.4               
+# [13] gower_1.0.2                   ModelMetrics_1.2.2.2          data.table_1.17.8            
+# [16] glue_1.8.0                    class_7.3-23                  globals_0.18.0               
+# [19] scales_1.4.0                  hms_1.1.4                     dbscan_1.2.4                 
+# [22] generics_0.1.4                checkmate_2.3.3               ggpubr_0.6.2                 
+# [25] pillar_1.11.1                 proxy_0.4-28                  survival_3.8-3               
+# [28] S7_0.2.1                      withr_3.0.2                   plyr_1.8.9                   
+# [31] listenv_0.10.0                codetools_0.2-20              timeDate_4051.111            
+# [34] abind_1.4-8                   dichromat_2.0-0.1             rstudioapi_0.17.1            
+# [37] tidyselect_1.2.1              timechange_0.3.0              nnet_7.3-20                  
+# [40] Matrix_1.7-4                  Metrics_0.1.4                 future.apply_1.20.1          
+# [43] Rcpp_1.1.0                    cellranger_1.1.0              rpart_4.1.24                 
+# [46] car_3.1-3                     carData_3.0-5                 parallelly_1.46.0            
+# [49] ranger_0.17.0                 RColorBrewer_1.1-3            stringi_1.8.7                
+# [52] R6_2.6.1                      broom_1.0.11                  recipes_1.3.1                
+# [55] tzdb_0.5.0                    prodlim_2025.04.28            utf8_1.2.6                   
+# [58] labeling_0.4.3                backports_1.5.0               crayon_1.5.3                 
+# [61] pkgconfig_2.0.3               lhs_1.2.0                     reshape2_1.4.5               
+# [64] vctrs_0.6.5                   mgcv_1.9-4                    nlme_3.1-168                 
+# [67] e1071_1.7-17                  magrittr_2.0.4                rlang_1.1.6                  
+# [70] gridExtra_2.3                 future_1.68.0                 iml_0.11.4                   
+# [73] DiceKriging_1.6.1             ggrepel_0.9.6                 viridis_0.6.5                
+# [76] viridisLite_0.4.2             fastshap_0.1.1                doParallel_1.0.17            
+# [79] iterators_1.0.14              foreach_1.5.2                 ParBayesianOptimization_1.2.6
+# [82] Boruta_9.0.0                  pROC_1.19.0.1                 caret_7.0-1                  
+# [85] lattice_0.22-7                randomForest_4.7-1.2          impute_1.84.0                
+# [88] readxl_1.4.5                  lubridate_1.9.4               forcats_1.0.1                
+# [91] stringr_1.6.0                 dplyr_1.1.4                   purrr_1.2.0                  
+# [94] readr_2.1.6                   tidyr_1.3.1                   tibble_3.3.0                 
+# [97] tidyverse_2.0.0               patchwork_1.3.2               cowplot_1.2.0                
+# [100] ggplot2_4.0.1
 

@@ -1,4 +1,4 @@
-# Random Forest Workflow - Metagenomics Data
+# Random Forest Workflow - Metagenomics and Metabolomics Data
 
 # load libraries
 library(ggplot2)
@@ -6,6 +6,8 @@ library(cowplot)
 library(patchwork)
 library(tidyverse)
 library(compositions)
+library(readxl)
+library(impute)
 library(randomForest)
 library(caret)
 library(pROC)
@@ -20,42 +22,133 @@ library(ggrepel)
 # setwd
 setwd("/Users/kristinvandenham/kmvanden/RStudio/")
 
+
+#########################################
+###   METAGENOMICS DATA PREPARATION   ###
+#########################################
+
 ### load data
-# metadata
+### metadata
 meta <- read.table("metadata.txt", header = TRUE)
 rownames(meta) <- meta$sample_name
 meta$condition <- as.factor(meta$condition) # convert condition column into a factor
-table(meta$condition)
-meta <- meta[, -3] # remove unnecessary meta column
 
-# feature table
-feat <- read.table("feature_table.txt", header = TRUE)
+# subset meta to samples present in metabolomics data
+sample_key <- read_excel("metabo_batch.xlsx", sheet = "Sample Meta Data") # sample name key
+sample_key <- sample_key %>% mutate(CLIENT_SAMPLE_ID = sub("KMV_", "SMS_", CLIENT_SAMPLE_ID)) # rename sample ids
+all(sample_key$CLIENT_SAMPLE_ID %in% meta$sample_id)
+meta <- meta %>% semi_join(sample_key, by = c("sample_id" = "CLIENT_SAMPLE_ID")) # subset
+
+
+### feature table
+metagen_feat <- read.table("feature_table.txt", header = TRUE)
+metagen_feat_t <- as.data.frame(t(metagen_feat)) # transpose feature table
+metagen_feat_t$sample_name <- rownames(metagen_feat_t)
+
+# subset metagen_feat_t to samples present in metabolomics data
+all(meta$sample_name %in% metagen_feat_t$sample_name)
+metagen_feat_t <- metagen_feat_t %>% semi_join(meta, by = "sample_name") # subset
+metagen_feat_t$sample_name <- NULL
 
 
 ### filter species present in less than 10% of samples
-feat_t <- as.data.frame(t(feat)) # transpose feature table
 min_prevalence <- 0.10
-feat_filtered <- feat_t[, colMeans(feat_t > 0) >= min_prevalence] # subset the feature table to only include features present in at least 10% of samples
-dim(feat_filtered) # 70 935
+metagen_feat_filtered <- metagen_feat_t[, colMeans(metagen_feat_t > 0) >= min_prevalence] # subset the feature table to only include features present in at least 10% of samples
 
 # convert feature table to relative abundances
-feat_rel_abund <- feat_filtered/rowSums(feat_filtered)
+metagen_feat_rel_abund <- metagen_feat_filtered/rowSums(metagen_feat_filtered)
 
 # add pseudocount and perform CLR transformation
-feat_clr <- clr(feat_rel_abund + 1e-6)
-feat_clr <- as.data.frame(feat_clr)
-
-# rownames of metadata need to match the rownames of the feature table
-all(rownames(meta) == rownames(feat_clr))
-feat_clr$sample_name <- rownames(feat_clr) # add column sample_name
-
-
-### merge metadata and feature table
-metagen <- merge(meta, feat_clr, by = "sample_name", all.x = TRUE)
-metagen <- metagen[,-1] # remove sample_name
+metagen_feat_clr <- clr(metagen_feat_rel_abund + 1e-6)
+metagen_feat_clr <- as.data.frame(metagen_feat_clr)
 
 # make sure names are syntactically valid 
-colnames(metagen) <- make.names(colnames(metagen))
+colnames(metagen_feat_clr) <- make.names(colnames(metagen_feat_clr))
+
+
+#########################################
+###   METABOLOMICS DATA PREPARATION   ###
+#########################################
+
+### load data
+### metadata
+meta <- read.table("metadata.txt", header = TRUE)
+
+# subset meta to samples present in metabolomics data
+sample_key <- read_excel("metabo_batch.xlsx", sheet = "Sample Meta Data") # sample name key
+sample_key <- sample_key %>% mutate(CLIENT_SAMPLE_ID = sub("KMV_", "SMS_", CLIENT_SAMPLE_ID)) # rename sample ids
+all(sample_key$CLIENT_SAMPLE_ID %in% meta$sample_id)
+meta <- meta %>%
+  left_join(sample_key %>% dplyr::select(CLIENT_SAMPLE_ID, PARENT_SAMPLE_NAME),
+            by = c("sample_id" = "CLIENT_SAMPLE_ID")) %>% # add PARENT_SAMPLE_NAME to meta
+  filter(!is.na(PARENT_SAMPLE_NAME)) # subset
+
+# convert condition column into a factor
+rownames(meta) <- meta$sample_name
+meta$condition <- as.factor(meta$condition) 
+table(meta$condition)
+
+
+### feature table
+metabo_feat <- read_excel("metabo_batch.xlsx", sheet = "Batch-normalized Data") # batch-normalized feature table
+all(metabo_feat$PARENT_SAMPLE_NAME %in% meta$PARENT_SAMPLE_NAME)
+
+# replace names in PARENT_SAMPLE_NAME column in metabo_feat with names from sample_name (from meta)
+metabo_feat <- metabo_feat %>%
+  left_join(meta %>% dplyr::select(PARENT_SAMPLE_NAME, sample_name), by = "PARENT_SAMPLE_NAME") %>%
+  mutate(PARENT_SAMPLE_NAME = sample_name) %>%
+  dplyr::select(-sample_name) %>%
+  slice(match(meta$sample_name, PARENT_SAMPLE_NAME)) %>% # match order of samples in meta
+  column_to_rownames(var = "PARENT_SAMPLE_NAME") # move sample id column to rownames
+all(rownames(metabo_feat) == rownames(meta))
+
+# replace CHEM_ID (colnames of metabo_feat) with names from CHEMICAL_NAME (from feat_key)
+feat_key <- read_excel("metabo_batch.xlsx", sheet = "Chemical Annotation")
+all(colnames(metabo_feat) == feat_key$CHEM_ID)
+name_map <- feat_key %>% dplyr::select(CHEM_ID, CHEMICAL_NAME) %>% deframe() 
+colnames(metabo_feat) <- name_map[colnames(metabo_feat)] %>% ifelse(is.na(.), colnames(metabo_feat), .)
+all(colnames(metabo_feat) == feat_key$CHEMICAL_NAME)
+colnames(metabo_feat) <- make.names(colnames(metabo_feat)) # make sure names are syntactically valid 
+
+
+### feature filtering, zero imputation and log transformation 
+# assess missingness (zeros listed as NAs in data.frame)
+total_missing <- sum(is.na(metabo_feat)) / prod(dim(metabo_feat)) * 100 # overall missingness
+missing_per_feature <- colMeans(is.na(metabo_feat)) * 100 # missingness per feature
+summary(missing_per_feature)
+missing_per_sample <- rowMeans(is.na(metabo_feat)) * 100 # missingness per sample
+hist(missing_per_feature, breaks = 50, main = "Percent missing per metabolite", xlab = "Percent missing")
+
+# remove features with greater than 30% missing values
+metabo_feat_filtered <- metabo_feat[, missing_per_feature <= 30]
+
+# impute remaining zeros with kNN
+metabo_feat_imputed <- impute.knn(as.matrix(t(metabo_feat_filtered)))$data # impute.knn expects features as rows
+metabo_feat_imputed <- t(metabo_feat_imputed)
+
+# log2 transformation (with pseudocount)
+metabo_feat_log <- log2(metabo_feat_imputed + 1e-6)
+metabo_feat_log <- as.data.frame(metabo_feat_log)
+
+
+########################################################
+###   COMBINING METAGENOMICS AND METABOLOMICS DATA   ###
+########################################################
+
+# tree splits are based on feature thresholds not magnitudes
+all(rownames(meta) == rownames(metagen_feat_clr)) # rownames of meta need to match rownames of metagen_feat_clr
+metagen_feat_clr$sample_name <- rownames(metagen_feat_clr) # add column sample_name
+
+all(rownames(meta) == rownames(metabo_feat_log)) # rownames of meta need to match rownames of metabo_feat_log
+metabo_feat_log$sample_name <- rownames(metabo_feat_log) # add column sample_name
+
+meta <- meta[, -c(3,4)] # remove meta columns that were used to format data.frames
+
+
+### merge meta and metagen_feat_clr and metabo_feat_log
+metagen <- merge(meta, metagen_feat_clr, by = "sample_name", all.x = TRUE)
+metagen_metabo <- merge(metagen, metabo_feat_log, by = "sample_name", all.x = TRUE)
+metagen_metabo$sample_name <- NULL
 
 
 ###############################################################################
@@ -63,10 +156,10 @@ colnames(metagen) <- make.names(colnames(metagen))
 ###############################################################################
 
 # data to be used in the model
-str(metagen)
+str(metagen_metabo)
 
 # column names for features to be included in model (full predictor set)
-all_feat_cols <- setdiff(colnames(metagen), "condition")
+all_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 # create lists to store metrics
 feature_importances <- list() # list to store feature importances
@@ -79,15 +172,15 @@ for (r in 1:50) {
   
   # create 5-folds for cross-validation (stratified on condition)
   set.seed(1234 + r*100)
-  folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+  folds <- createFolds(metagen_metabo$condition, k = 5, list = TRUE)
   
   # loop through the folds
   for (f in 1:5) {
     
     # splits the dataset into training and testing sets for the current fold
     test_idx <- folds[[f]] # test indices for the f-th fold
-    train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-    test_data <- metagen[test_idx, ] # testing data (fold f)
+    train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+    test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
     
     # train random forest model
     rf_model <- randomForest(x = train_data[, all_feat_cols], 
@@ -197,7 +290,7 @@ head(mean_importance, 20)
 
 
 ### plot species with highest MeanDecreaseAccuracy
-ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
+ggplot(metagen_metabo, aes(x = Lachnoclostridium_sp._YL32)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative species",
        subtitle = "Lachnoclostridium sp. YL32",
@@ -375,10 +468,10 @@ plot_roc(performance_metrics)
 ##################################################################
 
 # data to be used in the model
-str(metagen)
+str(metagen_metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(metagen), "condition")
+subset_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 # create list of class weight settings
 weight_grid <- list(healthy = c(healthy = 2, disease = 1),
@@ -399,15 +492,15 @@ for (i in names(weight_grid)) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+    folds <- createFolds(metagen_metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-      test_data <- metagen[test_idx, ] # testing data (fold f)
+      train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
@@ -459,7 +552,7 @@ for (i in names(weight_grid)) {
                                          train_cm = train_cm, train_auc = train_auc,
                                          test_roc_df = test_roc_df, train_roc_df = train_roc_df,
                                          param_value = i) # store performance metrics (test and train)
-
+      
     }
   }
 }
@@ -530,7 +623,7 @@ grid_perf_stats <- function(performance_metrics, type = c("test", "train", "gap"
                        sd_spec = sd(test_specificity, na.rm = TRUE),
                        mean_auc = mean(test_auc_vals, na.rm = TRUE),
                        sd_auc = sd(test_auc_vals, na.rm = TRUE))
-        
+      
     } else if (type == "train") {
       df <- data.frame(param_value = i,
                        mean_bal_acc = mean(train_balanced_accuracy, na.rm = TRUE),
@@ -543,7 +636,7 @@ grid_perf_stats <- function(performance_metrics, type = c("test", "train", "gap"
                        sd_spec = sd(train_specificity, na.rm = TRUE),
                        mean_auc = mean(train_auc_vals, na.rm = TRUE),
                        sd_auc = sd(train_auc_vals, na.rm = TRUE))
-        
+      
     } else if (type == "gap") {
       df <- data.frame(param_value = i,
                        mean_bal_acc = mean(train_balanced_accuracy - test_balanced_accuracy, na.rm = TRUE),
@@ -556,7 +649,7 @@ grid_perf_stats <- function(performance_metrics, type = c("test", "train", "gap"
                        sd_spec = sd(train_specificity - test_specificity, na.rm = TRUE),
                        mean_auc = mean(train_auc_vals - test_auc_vals, na.rm = TRUE),
                        sd_auc = sd(train_auc_vals - test_auc_vals, na.rm = TRUE))
-        
+      
     }
     
     summary_list[[i]] <- df
@@ -634,10 +727,10 @@ grid_plot_roc(performance_metrics)
 ################################################################
 
 # data to be used in the model
-str(metagen)
+str(metagen_metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(metagen), "condition")
+subset_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 # ntree values to test
 ntree_values <- c(125, 250, 500, 1000, 2000)
@@ -655,15 +748,15 @@ for (i in ntree_values) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+    folds <- createFolds(metagen_metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-      test_data <- metagen[test_idx, ] # testing data (fold f)
+      train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
@@ -734,10 +827,10 @@ grid_plot_roc(performance_metrics)
 ###############################################################
 
 # data to be used in the model
-str(metagen)
+str(metagen_metabo)
 
 # column names for features to be included in model (full predictor set)
-subset_feat_cols <- setdiff(colnames(metagen), "condition")
+subset_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 # mtry values to test
 mtry_values <- c(1, 2, 3, 4, 5, 6)
@@ -755,15 +848,15 @@ for (i in mtry_values) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+    folds <- createFolds(metagen_metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-      test_data <- metagen[test_idx, ] # testing data (fold f)
+      train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
@@ -834,10 +927,10 @@ grid_plot_roc(performance_metrics)
 ###################################################################
 
 # data to be used in the model
-str(metagen)
+str(metagen_metabo)
 
 # column names for features to be included in model (full predictor set)
-subset_feat_cols <- setdiff(colnames(metagen), "condition")
+subset_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 # nodesize values to test
 nodesize_values <- c(1, 2, 3, 4, 5, 6)
@@ -855,15 +948,15 @@ for (i in nodesize_values) {
     
     set.seed(1234 + r*100)
     # create 5-folds for cross-validation (stratified on condition)
-    folds <- createFolds(metagen$condition, k = 5, list = TRUE)
+    folds <- createFolds(metagen_metabo$condition, k = 5, list = TRUE)
     
     # loop through the folds
     for (f in 1:5) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-      test_data <- metagen[test_idx, ] # testing data (fold f)
+      train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
@@ -934,10 +1027,10 @@ grid_plot_roc(performance_metrics)
 ###########################################################################################################
 
 # data to be used in the model
-str(metagen)
+str(metagen_metabo)
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(metagen), "condition")
+subset_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 # create list of class weight settings
 weight_grid <- list(healthy = c(healthy = 2, disease = 1),
@@ -970,7 +1063,7 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
   for (r in 1:repeats) {
     
     #  create 5-folds for cross-validation (stratified on condition)
-    folds <- caret::createFolds(metagen$condition, k = 5, list = TRUE, returnTrain = FALSE)
+    folds <- caret::createFolds(metagen_metabo$condition, k = 5, list = TRUE, returnTrain = FALSE)
     fold_aucs <- numeric(length(folds))
     
     # loop through the folds
@@ -978,8 +1071,8 @@ scoring_function <- function(mtry, ntree, nodesize, classwt_label) {
       
       # splits the dataset into training and testing sets for the current fold
       test_idx <- folds[[f]] # test indices for the f-th fold
-      train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-      test_data <- metagen[test_idx, ] # testing data (fold f)
+      train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+      test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
       
       # train random forest model using full features to rank features
       rf_model <- randomForest(x = train_data[, subset_feat_cols], 
@@ -1045,11 +1138,11 @@ bestparams = getBestPars(optObj)
 ########################################################################################
 
 # data to be used in the model
-str(metagen)
-is.factor(metagen$condition) # condition needs to be a factor
+str(metagen_metabo)
+is.factor(metagen_metabo$condition) # condition needs to be a factor
 
 # column names for features to be included in model
-subset_feat_cols <- setdiff(colnames(metagen), "condition")
+subset_feat_cols <- setdiff(colnames(metagen_metabo), "condition")
 
 
 # create list of class weight settings
@@ -1078,7 +1171,7 @@ for (r in 1:outer_repeats) {
   
   # create outer_folds-folds for cross-validation (stratified on condition)
   set.seed(1234 + r*100)
-  outer_folds_list <- createFolds(metagen$condition, k = outer_folds, list = TRUE)
+  outer_folds_list <- createFolds(metagen_metabo$condition, k = outer_folds, list = TRUE)
   
   # loop through the folds
   for (f in 1:outer_folds) {
@@ -1086,8 +1179,8 @@ for (r in 1:outer_repeats) {
     
     # split dataset into training and testing sets for the current fold
     test_idx <- outer_folds_list[[f]] # test indices for the f-th fold
-    train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-    test_data <- metagen[test_idx, ] # testing data (fold f)
+    train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+    test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
     
     
     ### inner loop: Bayesian hyperparameter optimization
@@ -1289,10 +1382,10 @@ mean_importance <- all_features_importances %>%
 head(as.data.frame(mean_importance), 20)
 
 # plot features with highest MeanDecreaseAccuracy
-ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
+ggplot(metagen_metabo, aes(x = Petrimonas_mucosa)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
-       subtitle = "Lachnoclostridium sp. YL32",
+       subtitle = "Petrimonas mucosa",
        x = "Abundance", y = "Density of samples", fill = "Condition") +
   theme_minimal()
 
@@ -1394,8 +1487,8 @@ hyper_cor
 ############################################################
 
 # data to be used in the model
-str(metagen)
-is.factor(metagen$condition) # condition needs to be a factor
+str(metagen_metabo)
+is.factor(metagen_metabo$condition) # condition needs to be a factor
 
 # set outer and inner loop parameters
 outer_repeats <- 10
@@ -1413,7 +1506,7 @@ for (r in 1:outer_repeats) {
   
   # create outer_folds-folds for cross-validation (stratified on condition)
   set.seed(1234 + r*100)
-  outer_folds_list <- createFolds(metagen$condition, k = outer_folds, list = TRUE)
+  outer_folds_list <- createFolds(metagen_metabo$condition, k = outer_folds, list = TRUE)
   
   # loop through the folds
   for (f in 1:outer_folds) {
@@ -1421,8 +1514,8 @@ for (r in 1:outer_repeats) {
     
     # split dataset into training and testing sets for the current fold
     test_idx <- outer_folds_list[[f]] # test indices for the f-th fold
-    train_data <- metagen[-test_idx, ] # training data (all rows not in fold f)
-    test_data <- metagen[test_idx, ] # testing data (fold f)
+    train_data <- metagen_metabo[-test_idx, ] # training data (all rows not in fold f)
+    test_data <- metagen_metabo[test_idx, ] # testing data (fold f)
     
     ### Boruta feature selection
     boruta_metrics_list <- list() # list to store Boruta metrics
@@ -1605,7 +1698,7 @@ mean_importance <- all_features_importances %>%
 head(as.data.frame(mean_importance), 20)
 
 # plot features with highest MeanDecreaseAccuracy
-ggplot(metagen, aes(x = Lachnoclostridium_sp._YL32)) +
+ggplot(metagen_metabo, aes(x = Lachnoclostridium_sp._YL32)) +
   geom_density(aes(fill = condition), alpha = 0.5) +
   labs(title = "Abundance of discriminative features",
        subtitle = "Lachnoclostridium sp. YL32",
@@ -1670,13 +1763,13 @@ boruta_features <- boruta_features_df$Feature
 
 # train the model on the full dataset
 set.seed(1234)
-final_model <- randomForest(x = metagen[, boruta_features], 
-                            y = as.factor(metagen$condition), 
+final_model <- randomForest(x = metagen_metabo[, boruta_features], 
+                            y = as.factor(metagen_metabo$condition), 
                             ntree = 500,
                             importance = TRUE)
 
 # # save final model
-# saveRDS(final_model, file = "final_rf_model_metagen.rds")
+# saveRDS(final_model, file = "final_rf_model_metagen_metabo.rds")
 
 
 #########################################################################
@@ -1692,7 +1785,7 @@ pred_fun <- function(object, newdata) {
 set.seed(1234) # set seed
 
 shap_values <- fastshap::explain(object = final_model,
-                                 X = metagen[, boruta_features],
+                                 X = metagen_metabo[, boruta_features],
                                  pred_wrapper = pred_fun,
                                  nsim = 100, # number of Monte Carlo permutations
                                  adjust = TRUE) # centered SHAP values (baseline + sum of SHAPs = prediction)
@@ -1734,13 +1827,13 @@ dependence_plot <- function(shap_values, feature_matrix, feature_name, interacti
   return(p)
 }
 
-dependence_plot(shap_values = shap_values, feature_matrix = metagen[, boruta_features], 
+dependence_plot(shap_values = shap_values, feature_matrix = metagen_metabo[, boruta_features], 
                 feature_name = "Lachnoclostridium_sp._YL32", 
-                interaction_feature = "Clostridium_sp._M62.1")
+                interaction_feature = "beta.alanine")
 
-dependence_plot(shap_values = shap_values, feature_matrix = metagen[, boruta_features], 
+dependence_plot(shap_values = shap_values, feature_matrix = metagen_metabo[, boruta_features], 
                 feature_name = "Petrimonas_mucosa", 
-                interaction_feature = "Enterocloster_clostridioformis")
+                interaction_feature = "X.24683")
 
 
 ### bee swarm plot
@@ -1784,7 +1877,7 @@ beeswarm_plot <- function(shap_values, feature_matrix) {
 }
 
 beeswarm_plot(shap_values = shap_values, 
-              feature_matrix = metagen[, boruta_features])
+              feature_matrix = metagen_metabo[, boruta_features])
 
 
 ### mean and absolute mean SHAP values
@@ -1904,9 +1997,9 @@ shap_by_class <- function(shap_values, dataset, label, type = "mean_abs_shap") {
   return(p)
 }
 
-shap_by_class(shap_values = shap_values, dataset = metagen, 
+shap_by_class(shap_values = shap_values, dataset = metagen_metabo, 
               label = "condition", type = "mean_abs_shap")
-shap_by_class(shap_values = shap_values, dataset = metagen, 
+shap_by_class(shap_values = shap_values, dataset = metagen_metabo, 
               label = "condition", type = "mean_shap")
 
 
@@ -1949,9 +2042,9 @@ feature_metrics <- function(shap_values, dataset, label, feature_name) {
   return(combined_plot)
 }
 
-feature_metrics(shap_values = shap_values, dataset = metagen, label = "condition",
+feature_metrics(shap_values = shap_values, dataset = metagen_metabo, label = "condition",
                 feature_name = "Lachnoclostridium_sp._YL32")
-feature_metrics(shap_values = shap_values, dataset = metagen, label = "condition",
+feature_metrics(shap_values = shap_values, dataset = metagen_metabo, label = "condition",
                 feature_name = "Petrimonas_mucosa")
 
 
@@ -1977,12 +2070,12 @@ shap_pred_probs <- function(final_model, shap_values, dataset, feature_vector, l
 }
 
 shap_pred_probs(final_model = final_model, shap_values = shap_values, 
-                dataset = metagen, feature_vector = boruta_features, 
+                dataset = metagen_metabo, feature_vector = boruta_features, 
                 label = "condition", positive_class = "disease", 
                 feature_name = "Lachnoclostridium_sp._YL32")
 
 shap_pred_probs(final_model = final_model, shap_values = shap_values, 
-                dataset = metagen, feature_vector = boruta_features, 
+                dataset = metagen_metabo, feature_vector = boruta_features, 
                 label = "condition", positive_class = "disease", 
                 feature_name = "Petrimonas_mucosa")
 
@@ -1990,7 +2083,7 @@ shap_pred_probs(final_model = final_model, shap_values = shap_values,
 ### fastshap does not calculate second-order SHAP effects
 # partial dependence (PDP) interaction plots (how much each feature interacts with others)
 library(iml)
-predictor <- Predictor$new(final_model, data = metagen[, boruta_features], y = metagen$condition, type = "prob")
+predictor <- Predictor$new(final_model, data = metagen_metabo[, boruta_features], y = metagen_metabo$condition, type = "prob")
 interaction_strength <- Interaction$new(predictor)
 plot(interaction_strength)
 
@@ -2030,23 +2123,24 @@ sessionInfo()
 # [37] timeDate_4051.111             abind_1.4-8                   dichromat_2.0-0.1            
 # [40] rstudioapi_0.17.1             tidyselect_1.2.1              timechange_0.3.0             
 # [43] nnet_7.3-20                   Matrix_1.7-4                  Metrics_0.1.4                
-# [46] future.apply_1.20.1           Rcpp_1.1.0                    rpart_4.1.24                 
-# [49] car_3.1-3                     carData_3.0-5                 parallelly_1.46.0            
-# [52] ranger_0.17.0                 RColorBrewer_1.1-3            stringi_1.8.7                
-# [55] R6_2.6.1                      broom_1.0.11                  recipes_1.3.1                
-# [58] tzdb_0.5.0                    prodlim_2025.04.28            labeling_0.4.3               
-# [61] backports_1.5.0               crayon_1.5.3                  pkgconfig_2.0.3              
-# [64] lhs_1.2.0                     reshape2_1.4.5                vctrs_0.6.5                  
-# [67] mgcv_1.9-4                    nlme_3.1-168                  e1071_1.7-17                 
-# [70] magrittr_2.0.4                rlang_1.1.6                   gridExtra_2.3                
-# [73] future_1.68.0                 iml_0.11.4                    DiceKriging_1.6.1            
-# [76] ggrepel_0.9.6                 viridis_0.6.5                 viridisLite_0.4.2            
-# [79] fastshap_0.1.1                doParallel_1.0.17             iterators_1.0.14             
-# [82] foreach_1.5.2                 ParBayesianOptimization_1.2.6 Boruta_9.0.0                 
-# [85] pROC_1.19.0.1                 caret_7.0-1                   lattice_0.22-7               
-# [88] randomForest_4.7-1.2          compositions_2.0-9            lubridate_1.9.4              
-# [91] forcats_1.0.1                 stringr_1.6.0                 dplyr_1.1.4                  
-# [94] purrr_1.2.0                   readr_2.1.6                   tidyr_1.3.1                  
-# [97] tibble_3.3.0                  tidyverse_2.0.0               patchwork_1.3.2              
-# [100] cowplot_1.2.0                 ggplot2_4.0.1 
+# [46] future.apply_1.20.1           Rcpp_1.1.0                    cellranger_1.1.0             
+# [49] rpart_4.1.24                  car_3.1-3                     carData_3.0-5                
+# [52] parallelly_1.46.0             ranger_0.17.0                 RColorBrewer_1.1-3           
+# [55] stringi_1.8.7                 R6_2.6.1                      broom_1.0.11                 
+# [58] recipes_1.3.1                 tzdb_0.5.0                    prodlim_2025.04.28           
+# [61] utf8_1.2.6                    labeling_0.4.3                backports_1.5.0              
+# [64] crayon_1.5.3                  pkgconfig_2.0.3               lhs_1.2.0                    
+# [67] reshape2_1.4.5                vctrs_0.6.5                   mgcv_1.9-4                   
+# [70] nlme_3.1-168                  e1071_1.7-17                  magrittr_2.0.4               
+# [73] rlang_1.1.6                   gridExtra_2.3                 future_1.68.0                
+# [76] iml_0.11.4                    DiceKriging_1.6.1             ggrepel_0.9.6                
+# [79] viridis_0.6.5                 viridisLite_0.4.2             fastshap_0.1.1               
+# [82] doParallel_1.0.17             iterators_1.0.14              foreach_1.5.2                
+# [85] ParBayesianOptimization_1.2.6 Boruta_9.0.0                  pROC_1.19.0.1                
+# [88] caret_7.0-1                   lattice_0.22-7                randomForest_4.7-1.2         
+# [91] impute_1.84.0                 readxl_1.4.5                  compositions_2.0-9           
+# [94] lubridate_1.9.4               forcats_1.0.1                 stringr_1.6.0                
+# [97] dplyr_1.1.4                   purrr_1.2.0                   readr_2.1.6                  
+# [100] tidyr_1.3.1                   tibble_3.3.0                  tidyverse_2.0.0              
+# [103] patchwork_1.3.2               cowplot_1.2.0                 ggplot2_4.0.1 
 
