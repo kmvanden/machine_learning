@@ -1276,7 +1276,7 @@ param_grid_values <- c(0, 1, 2, 3, 4, 5) # grid of param values to test
 
 ### run model evaluation with current parameter grid search
 assign(paste0("xgboost_model_", current_param),
-       tune_xgb_param(param_grid_name = "current_param", # name of parameter to tune
+       tune_xgb_param(param_grid_name = current_param, # name of parameter to tune
                       param_grid_values = param_grid_values, # grid of param values to test
                       dataframe = metagen, # data to use
                       all_feat_cols = setdiff(colnames(metagen), c("condition", "condition_numeric")),
